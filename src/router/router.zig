@@ -1,6 +1,7 @@
 const std = @import("std");
 const matcher = @import("matcher.zig");
 const upstream_mod = @import("upstream.zig");
+const trie_mod = @import("trie.zig");
 
 /// Route configuration for initialization
 pub const RouteConfig = struct {
@@ -14,6 +15,8 @@ pub const RouteConfig = struct {
 pub const Router = struct {
     allocator: std.mem.Allocator,
     routes: []const Route,
+    trie_router: trie_mod.TrieRouter,
+    route_cache: std.AutoHashMap(u64, *const Route),
 
     /// Initialize a new Router
     pub fn init(allocator: std.mem.Allocator, routes: []const RouteConfig) !Router {
@@ -25,9 +28,26 @@ pub const Router = struct {
             internal_routes[i] = try Route.fromConfig(allocator, route);
         }
 
+        // Initialize the trie router
+        var trie_router = try trie_mod.TrieRouter.init(allocator);
+        errdefer trie_router.deinit();
+
+        // Add routes to the trie router
+        for (internal_routes, 0..) |route, i| {
+            for (route.methods) |method| {
+                try trie_router.addRoute(method, route.path_pattern, i);
+            }
+        }
+
+        // Initialize route cache
+        var route_cache = std.AutoHashMap(u64, *const Route).init(allocator);
+        errdefer route_cache.deinit();
+
         return Router{
             .allocator = allocator,
             .routes = internal_routes,
+            .trie_router = trie_router,
+            .route_cache = route_cache,
         };
     }
 
@@ -38,12 +58,37 @@ pub const Router = struct {
             mutable_route.deinit(self.allocator);
         }
         self.allocator.free(self.routes);
+        self.trie_router.deinit();
+        self.route_cache.deinit();
+    }
+
+    /// Hash a path and method for cache lookup
+    fn hashPathMethod(path: []const u8, method: []const u8) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(path);
+        hasher.update(method);
+        return hasher.final();
     }
 
     /// Find a route matching the given path and method
     pub fn findRoute(self: *Router, path: []const u8, method: []const u8) !?*const Route {
+        // Check cache first for fastest lookup
+        const hash = hashPathMethod(path, method);
+        if (self.route_cache.get(hash)) |route| {
+            return route;
+        }
+
+        // Use trie router for fast path matching
+        if (try self.trie_router.findRoute(method, path)) |route_index| {
+            const route = &self.routes[route_index];
+            try self.route_cache.put(hash, route);
+            return route;
+        }
+
+        // Fallback to linear search for complex patterns
         for (self.routes) |*route| {
             if (try route.matches(path, method)) {
+                try self.route_cache.put(hash, route);
                 return route;
             }
         }
@@ -124,6 +169,9 @@ pub const Route = struct {
         // Create upstream connection pool
         var pool = try upstream_mod.ConnectionPool.init(allocator, config.upstream);
         errdefer pool.deinit();
+
+        // Pre-warm the connection pool with some connections
+        try pool.preWarm(5);
 
         // Copy methods
         var methods_copy = try allocator.alloc([]const u8, config.methods.len);

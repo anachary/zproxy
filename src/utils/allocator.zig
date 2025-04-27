@@ -3,8 +3,13 @@ const std = @import("std");
 /// Re-export buffer and time utilities
 pub const buffer = @import("buffer.zig");
 pub const time = @import("time.zig");
+pub const zero_copy = @import("zero_copy.zig");
+pub const vectored_io = @import("vectored_io.zig");
+pub const numa = @import("numa.zig");
+pub const thread_pool = @import("thread_pool.zig");
+pub const acceptor = @import("acceptor.zig");
 
-/// Arena allocator wrapper
+/// Arena allocator for efficient memory management
 pub const ArenaAllocator = struct {
     arena: std.heap.ArenaAllocator,
 

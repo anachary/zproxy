@@ -1,24 +1,42 @@
 const std = @import("std");
 const frames = @import("frames.zig");
 const streams = @import("streams.zig");
+const multiplexer_mod = @import("multiplexer.zig");
+const utils = @import("../../utils/allocator.zig");
 
 /// Handle an HTTP/2 connection
 pub fn handle(conn_context: anytype) !void {
     const logger = std.log.scoped(.http2_handler);
     logger.debug("Handling HTTP/2 connection", .{});
 
+    // Use an arena allocator for the connection lifetime
+    var arena = utils.ArenaAllocator.init(conn_context.allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.getAllocator();
+
+    // Start timer for metrics
+    var timer = utils.time.Timer.start();
+
     // Initialize HTTP/2 connection state
     var h2_conn = try frames.Connection.init(
-        conn_context.allocator,
+        arena_allocator,
         conn_context.connection.stream,
     );
     defer h2_conn.deinit();
 
-    // Send initial SETTINGS frame
+    // Set TCP options for better performance
+    try conn_context.connection.stream.setNoDelay(true);
+
+    // Create multiplexer for handling multiple streams
+    var multiplexer = try multiplexer_mod.Multiplexer.init(arena_allocator, &h2_conn);
+    defer multiplexer.deinit();
+
+    // Send initial SETTINGS frame with optimized values
     try h2_conn.sendSettings(.{
-        .max_concurrent_streams = 100,
-        .initial_window_size = 65535,
-        .max_frame_size = 16384,
+        .max_concurrent_streams = 256, // Allow more concurrent streams
+        .initial_window_size = 1048576, // 1MB window size for better throughput
+        .max_frame_size = 16384, // Maximum frame size
+        .header_table_size = 4096, // HPACK header table size
     });
 
     // Process frames until connection is closed
@@ -28,11 +46,36 @@ pub fn handle(conn_context: anytype) !void {
                 logger.debug("Connection closed", .{});
                 break;
             }
+
+            if (err == error.ConnectionReset or
+                err == error.BrokenPipe or
+                err == error.ConnectionAborted)
+            {
+                logger.debug("Connection error: {}", .{err});
+                break;
+            }
+
             return err;
         };
 
-        try processFrame(conn_context, &h2_conn, frame);
+        // Use the multiplexer to process the frame
+        multiplexer.processFrame(frame) catch |err| {
+            if (err == error.ConnectionClosed) {
+                logger.debug("Connection closed by peer", .{});
+                break;
+            }
+
+            logger.warn("Error processing frame: {}", .{err});
+            // Continue processing other frames
+        };
+
+        // Record metrics
+        try conn_context.metrics_collector.incrementCounter("http2.frames_processed", 1);
     }
+
+    // Record final metrics
+    const elapsed = timer.elapsedMillis();
+    try conn_context.metrics_collector.recordHistogram("http2.connection_duration_ms", @floatFromInt(elapsed));
 }
 
 /// Process an HTTP/2 frame

@@ -100,4 +100,52 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // Build the connection benchmark tool
+    const connection_benchmark = b.addExecutable(.{
+        .name = "connection_benchmark",
+        .root_source_file = .{ .path = "tools/connection_benchmark.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(connection_benchmark);
+
+    // Create a step for running the connection benchmark
+    const run_benchmark_cmd = b.addRunArtifact(connection_benchmark);
+    run_benchmark_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_benchmark_cmd.addArgs(args);
+    }
+    const run_benchmark_step = b.step("benchmark", "Run the connection benchmark tool");
+    run_benchmark_step.dependOn(&run_benchmark_cmd.step);
+
+    // Build the mock server for benchmark testing
+    const mock_server = b.addExecutable(.{
+        .name = "mock_server",
+        .root_source_file = .{ .path = "tools/mock_server.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(mock_server);
+
+    // Create a step for running the mock server
+    const run_mock_server_cmd = b.addRunArtifact(mock_server);
+    run_mock_server_cmd.step.dependOn(b.getInstallStep());
+    const run_mock_server_step = b.step("mock-server", "Run the mock server for benchmark testing");
+    run_mock_server_step.dependOn(&run_mock_server_cmd.step);
+
+    // Build the simplified benchmark tool
+    const simple_benchmark = b.addExecutable(.{
+        .name = "simple_benchmark",
+        .root_source_file = .{ .path = "tools/simple_benchmark.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(simple_benchmark);
+
+    // Create a step for running the simplified benchmark
+    const run_simple_benchmark_cmd = b.addRunArtifact(simple_benchmark);
+    run_simple_benchmark_cmd.step.dependOn(b.getInstallStep());
+    const run_simple_benchmark_step = b.step("simple-benchmark", "Run the simplified connection benchmark tool");
+    run_simple_benchmark_step.dependOn(&run_simple_benchmark_cmd.step);
 }
