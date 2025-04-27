@@ -104,7 +104,7 @@ pub fn build(b: *std.Build) void {
     // Build the connection benchmark tool
     const connection_benchmark = b.addExecutable(.{
         .name = "connection_benchmark",
-        .root_source_file = .{ .path = "tools/connection_benchmark.zig" },
+        .root_source_file = .{ .path = "benchmarks/connection_benchmark.zig" },
         .target = target,
         .optimize = optimize,
     });
@@ -122,7 +122,7 @@ pub fn build(b: *std.Build) void {
     // Build the mock server for benchmark testing
     const mock_server = b.addExecutable(.{
         .name = "mock_server",
-        .root_source_file = .{ .path = "tools/mock_server.zig" },
+        .root_source_file = .{ .path = "benchmarks/mock_server.zig" },
         .target = target,
         .optimize = optimize,
     });
@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
     // Build the simplified benchmark tool
     const simple_benchmark = b.addExecutable(.{
         .name = "simple_benchmark",
-        .root_source_file = .{ .path = "tools/simple_benchmark.zig" },
+        .root_source_file = .{ .path = "benchmarks/simple_benchmark.zig" },
         .target = target,
         .optimize = optimize,
     });

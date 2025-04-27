@@ -53,7 +53,7 @@ pub const Gateway = struct {
     metrics_collector: metrics.Collector,
     server: ?std.net.StreamServer = null,
     shutdown_requested: std.atomic.Atomic(bool),
-    thread_pool: ThreadPool,
+    thread_pool: thread_pool_mod.NumaThreadPool,
     buffer_pool: ConnectionBufferPool,
 
     /// Connection handler context
@@ -83,7 +83,8 @@ pub const Gateway = struct {
 
         // Determine optimal thread count (use number of CPU cores)
         const thread_count = try std.Thread.getCpuCount();
-        var thread_pool = try ThreadPool.init(allocator, thread_count);
+        _ = thread_count;
+        var thread_pool = try thread_pool_mod.NumaThreadPool.init(allocator);
         errdefer thread_pool.deinit();
 
         var buffer_pool = try ConnectionBufferPool.init(allocator);

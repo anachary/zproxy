@@ -8,10 +8,10 @@ pub const LockFreeQueue = struct {
         data: Job,
     };
 
-    head: std.atomic.Value(*Node),
-    tail: std.atomic.Value(*Node),
+    head: std.atomic.Atomic(*Node),
+    tail: std.atomic.Atomic(*Node),
     allocator: std.mem.Allocator,
-    
+
     /// A job to be executed by the thread pool
     pub const Job = struct {
         function: *const fn (context: *anyopaque) void,
@@ -28,8 +28,8 @@ pub const LockFreeQueue = struct {
         };
 
         return LockFreeQueue{
-            .head = std.atomic.Value(*Node).init(dummy),
-            .tail = std.atomic.Value(*Node).init(dummy),
+            .head = std.atomic.Atomic(*Node).init(dummy),
+            .tail = std.atomic.Atomic(*Node).init(dummy),
             .allocator = allocator,
         };
     }
@@ -63,8 +63,9 @@ pub const LockFreeQueue = struct {
             if (tail == self.tail.load(.Acquire)) {
                 if (next == null) {
                     // Try to link the new node
-                    if (tail.next == null and 
-                        @cmpxchgStrong(?*Node, &tail.next, null, node, .Release, .Monotonic) == null) {
+                    if (tail.next == null and
+                        @cmpxchgStrong(?*Node, &tail.next, null, node, .Release, .Monotonic) == null)
+                    {
                         // Update the tail pointer
                         _ = self.tail.compareAndSwap(tail, node, .Release, .Monotonic);
                         return;
@@ -119,7 +120,7 @@ pub const NumaThreadPool = struct {
     allocator: std.mem.Allocator,
     node_pools: []NodePool,
     shutdown_requested: std.atomic.Atomic(bool),
-    
+
     /// A pool of threads for a specific NUMA node
     const NodePool = struct {
         allocator: std.mem.Allocator,
@@ -129,7 +130,7 @@ pub const NumaThreadPool = struct {
         numa_allocator: numa.NumaAllocator,
         shutdown_requested: *std.atomic.Atomic(bool),
         semaphore: std.Thread.Semaphore,
-        
+
         /// Initialize a new node pool
         pub fn init(
             allocator: std.mem.Allocator,
@@ -139,13 +140,13 @@ pub const NumaThreadPool = struct {
         ) !NodePool {
             var numa_allocator = numa.NumaAllocator.init(allocator, node);
             const node_allocator = numa_allocator.allocator();
-            
+
             var job_queue = try LockFreeQueue.init(node_allocator);
             errdefer job_queue.deinit();
-            
+
             var threads = try allocator.alloc(std.Thread, thread_count);
             errdefer allocator.free(threads);
-            
+
             var pool = NodePool{
                 .allocator = allocator,
                 .node = node,
@@ -155,54 +156,54 @@ pub const NumaThreadPool = struct {
                 .shutdown_requested = shutdown_requested,
                 .semaphore = std.Thread.Semaphore{},
             };
-            
+
             // Get CPUs for this NUMA node
             var node_cpus = try numa.Numa.getCpusForNumaNode(node, allocator);
             defer allocator.free(node_cpus);
-            
+
             // Create worker threads
             for (threads, 0..) |*thread, i| {
                 const cpu_id = node_cpus[i % node_cpus.len];
-                thread.* = try std.Thread.spawn(.{}, workerThread, .{ 
-                    &pool, 
-                    i, 
+                thread.* = try std.Thread.spawn(.{}, workerThread, .{
+                    &pool,
+                    i,
                     cpu_id,
                 });
             }
-            
+
             return pool;
         }
-        
+
         /// Clean up resources
         pub fn deinit(self: *NodePool) void {
             // Wait for all threads to finish
             for (self.threads) |thread| {
                 thread.join();
             }
-            
+
             // Clean up resources
             self.allocator.free(self.threads);
             self.job_queue.deinit();
         }
-        
+
         /// Add a job to the queue
         pub fn addJob(self: *NodePool, job: LockFreeQueue.Job) !void {
             try self.job_queue.enqueue(job);
             self.semaphore.post();
         }
-        
+
         /// Worker thread function
         fn workerThread(pool: *NodePool, thread_id: usize, cpu_id: usize) !void {
             const logger = std.log.scoped(.thread_pool);
             logger.debug("Worker thread {d} started on NUMA node {d}, CPU {d}", .{
-                thread_id, 
-                pool.node, 
+                thread_id,
+                pool.node,
                 cpu_id,
             });
-            
+
             // Set CPU affinity
             try numa.Numa.setThreadAffinity(cpu_id);
-            
+
             while (!pool.shutdown_requested.load(.Acquire)) {
                 // Try to get a job
                 if (pool.job_queue.dequeue()) |job| {
@@ -210,34 +211,34 @@ pub const NumaThreadPool = struct {
                     job.function(job.context);
                     continue;
                 }
-                
+
                 // No job available, wait for one
                 pool.semaphore.wait();
-                
+
                 // Check if shutdown was requested while waiting
                 if (pool.shutdown_requested.load(.Acquire)) {
                     break;
                 }
             }
-            
+
             logger.debug("Worker thread {d} on NUMA node {d} shutting down", .{
-                thread_id, 
+                thread_id,
                 pool.node,
             });
         }
     };
-    
+
     /// Initialize a new NUMA-aware thread pool
     pub fn init(allocator: std.mem.Allocator) !NumaThreadPool {
         // Get the number of NUMA nodes
         const node_count = try numa.Numa.getNumaNodeCount();
-        
+
         // Create a pool for each NUMA node
         var node_pools = try allocator.alloc(NodePool, node_count);
         errdefer allocator.free(node_pools);
-        
+
         var shutdown_requested = std.atomic.Atomic(bool).init(false);
-        
+
         // Initialize each node pool
         var i: usize = 0;
         errdefer {
@@ -247,13 +248,13 @@ pub const NumaThreadPool = struct {
                 node_pools[i].deinit();
             }
         }
-        
+
         while (i < node_count) : (i += 1) {
             // Get the number of CPUs for this node
             var node_cpus = try numa.Numa.getCpusForNumaNode(i, allocator);
             const thread_count = node_cpus.len;
             allocator.free(node_cpus);
-            
+
             // Initialize the node pool
             node_pools[i] = try NodePool.init(
                 allocator,
@@ -262,39 +263,39 @@ pub const NumaThreadPool = struct {
                 &shutdown_requested,
             );
         }
-        
+
         return NumaThreadPool{
             .allocator = allocator,
             .node_pools = node_pools,
             .shutdown_requested = shutdown_requested,
         };
     }
-    
+
     /// Clean up resources
     pub fn deinit(self: *NumaThreadPool) void {
         // Signal shutdown
         self.shutdown_requested.store(true, .Release);
-        
+
         // Wake up all threads
         for (self.node_pools) |*pool| {
             for (pool.threads) |_| {
                 pool.semaphore.post();
             }
         }
-        
+
         // Clean up each node pool
         for (self.node_pools) |*pool| {
             pool.deinit();
         }
-        
+
         // Free the node pools array
         self.allocator.free(self.node_pools);
     }
-    
+
     /// Add a job to the thread pool
     pub fn addJob(
-        self: *NumaThreadPool, 
-        function: *const fn (context: *anyopaque) void, 
+        self: *NumaThreadPool,
+        function: *const fn (context: *anyopaque) void,
         context: *anyopaque,
         preferred_node: ?usize,
     ) !void {
@@ -302,7 +303,7 @@ pub const NumaThreadPool = struct {
             .function = function,
             .context = context,
         };
-        
+
         if (preferred_node) |node| {
             // Try to add the job to the preferred node
             if (node < self.node_pools.len) {
@@ -310,17 +311,17 @@ pub const NumaThreadPool = struct {
                 return;
             }
         }
-        
+
         // No preferred node or invalid node, use round-robin
         const node = @mod(@as(usize, @intFromPtr(context)), self.node_pools.len);
         try self.node_pools[node].addJob(job);
     }
-    
+
     /// Get the number of NUMA nodes
     pub fn getNodeCount(self: *NumaThreadPool) usize {
         return self.node_pools.len;
     }
-    
+
     /// Get the total number of threads
     pub fn getThreadCount(self: *NumaThreadPool) usize {
         var count: usize = 0;
