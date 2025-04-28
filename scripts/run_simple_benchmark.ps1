@@ -1,230 +1,205 @@
-# PowerShell script to run a simple connection benchmark and generate a report
+# Simple benchmark runner
+param (
+    [int]$ServerPort = 8080,
+    [int]$Connections = 1000,
+    [int]$Duration = 10,
+    [int]$Concurrency = 10
+)
 
-# Default values
-$HOST = "127.0.0.1"
-$PORT = 8080
-$DURATION = 10
-$CONCURRENCY = 1000
-$KEEP_ALIVE = $false
-$PATH = "/"
-$OUTPUT_DIR = "benchmark_results"
+# Set working directory to the script's directory
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location (Split-Path -Parent $scriptDir)
 
-# Parse command line arguments
-for ($i = 0; $i -lt $args.Count; $i++) {
-    switch ($args[$i]) {
-        "--host" {
-            $HOST = $args[++$i]
-        }
-        "--port" {
-            $PORT = [int]$args[++$i]
-        }
-        "--duration" {
-            $DURATION = [int]$args[++$i]
-        }
-        "--concurrency" {
-            $CONCURRENCY = [int]$args[++$i]
-        }
-        "--keep-alive" {
-            $KEEP_ALIVE = $true
-        }
-        "--path" {
-            $PATH = $args[++$i]
-        }
-        "--output" {
-            $OUTPUT_DIR = $args[++$i]
-        }
-        default {
-            Write-Host "Unknown option: $($args[$i])"
-            exit 1
-        }
-    }
+# Create results directory
+$resultsDir = "benchmarks/results"
+if (-not (Test-Path $resultsDir)) {
+    New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
 }
 
-# Create output directory
-if (-not (Test-Path $OUTPUT_DIR)) {
-    New-Item -ItemType Directory -Path $OUTPUT_DIR | Out-Null
-}
+# Get timestamp for results
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$resultsFile = "$resultsDir/simple_benchmark_$timestamp.txt"
 
-# Build the benchmark tool
-Write-Host "Building benchmark tools..."
-& zig build -Doptimize=ReleaseFast
+# Start the test server
+Write-Host "Starting test server..." -ForegroundColor Cyan
+$serverProcess = Start-Process -FilePath "powershell" -ArgumentList "-File $scriptDir\start_test_server.ps1 -Port $ServerPort" -PassThru -NoNewWindow
 
-# Start the mock server in a separate process
-Write-Host "Starting mock server on port $PORT..."
-$mockServerProcess = Start-Process -FilePath ".\zig-out\bin\mock_server.exe" -PassThru -NoNewWindow
-
-# Wait for the server to start
+# Wait for server to start
 Start-Sleep -Seconds 2
 
-# Run the benchmark
-Write-Host "Running benchmark against $HOST`:$PORT..."
-$keep_alive_flag = if ($KEEP_ALIVE) { "--keep-alive" } else { "" }
-
-$output_file = "$OUTPUT_DIR\benchmark_results.txt"
-
-& .\zig-out\bin\simple_benchmark.exe `
-    --host $HOST `
-    --port $PORT `
-    --duration $DURATION `
-    --concurrency $CONCURRENCY `
-    --path $PATH `
-    $keep_alive_flag | Tee-Object -FilePath $output_file
-
-# Stop the mock server
-Write-Host "Stopping mock server..."
-Stop-Process -Id $mockServerProcess.Id -Force
-
-# Extract metrics from the results
-$content = Get-Content $output_file
-$conn_rate = ($content | Select-String "Connection rate:").Line -replace ".*Connection rate: ([0-9.]+).*", '$1'
-$success_rate = ($content | Select-String "Success rate:").Line -replace ".*Success rate: ([0-9.]+).*", '$1'
-$avg_latency = ($content | Select-String "Average connection time:").Line -replace ".*Average connection time: ([0-9.]+).*", '$1'
-$min_latency = ($content | Select-String "Min connection time:").Line -replace ".*Min connection time: ([0-9.]+).*", '$1'
-$max_latency = ($content | Select-String "Max connection time:").Line -replace ".*Max connection time: ([0-9.]+).*", '$1'
-
-# Create a summary report
-@"
-# Connection Benchmark Report
-
-## Test Configuration
-- Host: $HOST
-- Port: $PORT
-- Duration: $DURATION seconds
-- Concurrency: $CONCURRENCY connections
-- Keep-alive: $KEEP_ALIVE
-- Path: $PATH
-
-## Results
-
-| Metric | Value |
-|--------|-------|
-| Connection Rate | $conn_rate connections/second |
-| Success Rate | $success_rate% |
-| Average Latency | $avg_latency ms |
-| Minimum Latency | $min_latency ms |
-| Maximum Latency | $max_latency ms |
-
-## Analysis
-
-This benchmark measures how many concurrent connections the server can handle per second.
-
-- **Connection Rate**: The number of connections established per second. Higher is better.
-- **Success Rate**: The percentage of connection attempts that succeeded. Higher is better.
-- **Latency**: The time it takes to establish a connection. Lower is better.
-
-## Comparison with Other Proxies
-
-| Proxy    | Connections/sec | Avg Latency (ms) |
-|----------|----------------|------------------|
-| ZProxy   | $conn_rate     | $avg_latency     |
-| Nginx    | ~120,000       | ~1.2             |
-| HAProxy  | ~130,000       | ~1.0             |
-| Envoy    | ~100,000       | ~1.5             |
-
-*Note: Values for other proxies are typical benchmarks and may vary based on hardware and configuration.*
-
-## Conclusion
-
-ZProxy demonstrates excellent connection handling capacity, able to manage a high number of concurrent connections with low latency.
-"@ | Out-File -FilePath "$OUTPUT_DIR\benchmark_report.md"
-
-Write-Host "Benchmark completed. Report saved to $OUTPUT_DIR\benchmark_report.md"
-
-# Create a simple HTML visualization
-@"
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Connection Benchmark Visualization</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .chart-container { width: 800px; height: 400px; margin-bottom: 30px; }
-  </style>
-</head>
-<body>
-  <h1>Connection Benchmark Visualization</h1>
-  
-  <h2>Connections per Second Comparison</h2>
-  <div class="chart-container">
-    <canvas id="connectionRateChart"></canvas>
-  </div>
-  
-  <h2>Connection Latency Comparison (ms)</h2>
-  <div class="chart-container">
-    <canvas id="latencyChart"></canvas>
-  </div>
-  
-  <script>
-    // Data
-    const proxies = ['ZProxy', 'Nginx', 'HAProxy', 'Envoy'];
+try {
+    # Run a simple HTTP benchmark using PowerShell
+    Write-Host "Running benchmark..." -ForegroundColor Cyan
     
-    const connectionRates = [$conn_rate, 120000, 130000, 100000];
+    # Create a stopwatch to measure time
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     
-    const avgLatencies = [$avg_latency, 1.2, 1.0, 1.5];
+    # Create a counter for successful requests
+    $successfulRequests = 0
+    $failedRequests = 0
     
-    // Create charts
-    const connectionRateChart = new Chart(
-      document.getElementById('connectionRateChart'),
-      {
-        type: 'bar',
-        data: {
-          labels: proxies,
-          datasets: [{
-            label: 'Connections per Second',
-            data: connectionRates,
-            backgroundColor: 'rgba(54, 162, 235, 0.5)',
-            borderColor: 'rgba(54, 162, 235, 1)',
-            borderWidth: 1
-          }]
-        },
-        options: {
-          scales: {
-            y: {
-              beginAtZero: true,
-              title: {
-                display: true,
-                text: 'Connections/sec'
-              }
+    # Create an array to store response times
+    $responseTimes = @()
+    
+    # Create runspace pool for parallel execution
+    $runspacePool = [runspacefactory]::CreateRunspacePool(1, $Concurrency)
+    $runspacePool.Open()
+    
+    # Create a collection to hold the runspaces
+    $runspaces = New-Object System.Collections.ArrayList
+    
+    # Function to make HTTP request
+    $scriptBlock = {
+        param($url)
+        
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+            $sw.Stop()
+            
+            return @{
+                Success = $true
+                StatusCode = $response.StatusCode
+                Time = $sw.ElapsedMilliseconds
+                Length = $response.Content.Length
             }
-          }
         }
-      }
-    );
-    
-    const latencyChart = new Chart(
-      document.getElementById('latencyChart'),
-      {
-        type: 'bar',
-        data: {
-          labels: proxies,
-          datasets: [
-            {
-              label: 'Average Latency',
-              data: avgLatencies,
-              backgroundColor: 'rgba(255, 159, 64, 0.5)',
-              borderColor: 'rgba(255, 159, 64, 1)',
-              borderWidth: 1
+        catch {
+            $sw.Stop()
+            return @{
+                Success = $false
+                Error = $_.Exception.Message
+                Time = $sw.ElapsedMilliseconds
             }
-          ]
-        },
-        options: {
-          scales: {
-            y: {
-              beginAtZero: true,
-              title: {
-                display: true,
-                text: 'Latency (ms)'
-              }
-            }
-          }
         }
-      }
-    );
-  </script>
-</body>
-</html>
-"@ | Out-File -FilePath "$OUTPUT_DIR\visualization.html"
-
-Write-Host "Visualization created at $OUTPUT_DIR\visualization.html"
-Write-Host "Open it in a browser to view the charts."
+    }
+    
+    # Start the benchmark
+    $url = "http://localhost:$ServerPort/"
+    $endTime = $stopwatch.ElapsedMilliseconds + ($Duration * 1000)
+    
+    Write-Host "Benchmarking $url for $Duration seconds with $Concurrency concurrent connections..." -ForegroundColor Cyan
+    
+    while ($stopwatch.ElapsedMilliseconds -lt $endTime) {
+        # Check if we need to add more runspaces
+        while ($runspaces.Count -lt $Concurrency -and $stopwatch.ElapsedMilliseconds -lt $endTime) {
+            $powerShell = [powershell]::Create().AddScript($scriptBlock).AddArgument($url)
+            $powerShell.RunspacePool = $runspacePool
+            
+            $runspace = @{}
+            $runspace.PowerShell = $powerShell
+            $runspace.Handle = $powerShell.BeginInvoke()
+            
+            $null = $runspaces.Add($runspace)
+        }
+        
+        # Check for completed runspaces
+        for ($i = 0; $i -lt $runspaces.Count; $i++) {
+            $runspace = $runspaces[$i]
+            
+            if ($runspace.Handle.IsCompleted) {
+                $result = $runspace.PowerShell.EndInvoke($runspace.Handle)
+                
+                if ($result.Success) {
+                    $successfulRequests++
+                    $responseTimes += $result.Time
+                }
+                else {
+                    $failedRequests++
+                }
+                
+                $runspace.PowerShell.Dispose()
+                $runspaces.RemoveAt($i)
+                $i--
+            }
+        }
+        
+        # Small sleep to prevent CPU hogging
+        Start-Sleep -Milliseconds 10
+    }
+    
+    # Wait for remaining runspaces to complete
+    while ($runspaces.Count -gt 0) {
+        for ($i = 0; $i -lt $runspaces.Count; $i++) {
+            $runspace = $runspaces[$i]
+            
+            if ($runspace.Handle.IsCompleted) {
+                $result = $runspace.PowerShell.EndInvoke($runspace.Handle)
+                
+                if ($result.Success) {
+                    $successfulRequests++
+                    $responseTimes += $result.Time
+                }
+                else {
+                    $failedRequests++
+                }
+                
+                $runspace.PowerShell.Dispose()
+                $runspaces.RemoveAt($i)
+                $i--
+            }
+        }
+        
+        # Small sleep to prevent CPU hogging
+        Start-Sleep -Milliseconds 10
+    }
+    
+    # Stop the stopwatch
+    $stopwatch.Stop()
+    
+    # Calculate results
+    $totalRequests = $successfulRequests + $failedRequests
+    $requestsPerSecond = $totalRequests / $stopwatch.Elapsed.TotalSeconds
+    
+    # Calculate latency statistics
+    $avgLatency = if ($responseTimes.Count -gt 0) { ($responseTimes | Measure-Object -Average).Average } else { 0 }
+    $minLatency = if ($responseTimes.Count -gt 0) { ($responseTimes | Measure-Object -Minimum).Minimum } else { 0 }
+    $maxLatency = if ($responseTimes.Count -gt 0) { ($responseTimes | Measure-Object -Maximum).Maximum } else { 0 }
+    
+    # Sort response times for percentiles
+    $sortedTimes = $responseTimes | Sort-Object
+    $p50Index = [math]::Floor($sortedTimes.Count * 0.5)
+    $p90Index = [math]::Floor($sortedTimes.Count * 0.9)
+    $p99Index = [math]::Floor($sortedTimes.Count * 0.99)
+    
+    $p50Latency = if ($sortedTimes.Count -gt 0) { $sortedTimes[$p50Index] } else { 0 }
+    $p90Latency = if ($sortedTimes.Count -gt 0) { $sortedTimes[$p90Index] } else { 0 }
+    $p99Latency = if ($sortedTimes.Count -gt 0) { $sortedTimes[$p99Index] } else { 0 }
+    
+    # Create results
+    $results = @"
+Benchmark Results:
+  Duration: $($stopwatch.Elapsed.TotalSeconds.ToString("0.00")) seconds
+  Requests: $totalRequests
+  Successful: $successfulRequests ($([math]::Round($successfulRequests / $totalRequests * 100, 2))%)
+  Failed: $failedRequests ($([math]::Round($failedRequests / $totalRequests * 100, 2))%)
+  Requests/second: $([math]::Round($requestsPerSecond, 2))
+  Latency:
+    Average: $([math]::Round($avgLatency, 2)) ms
+    Minimum: $([math]::Round($minLatency, 2)) ms
+    Maximum: $([math]::Round($maxLatency, 2)) ms
+    p50: $([math]::Round($p50Latency, 2)) ms
+    p90: $([math]::Round($p90Latency, 2)) ms
+    p99: $([math]::Round($p99Latency, 2)) ms
+"@
+    
+    # Display results
+    Write-Host $results -ForegroundColor Green
+    
+    # Save results to file
+    $results | Out-File -FilePath $resultsFile
+    Write-Host "Results saved to $resultsFile" -ForegroundColor Cyan
+}
+finally {
+    # Stop the server
+    if ($serverProcess -ne $null -and -not $serverProcess.HasExited) {
+        Stop-Process -Id $serverProcess.Id -Force
+        Write-Host "Test server stopped." -ForegroundColor Cyan
+    }
+    
+    # Close the runspace pool
+    if ($runspacePool -ne $null) {
+        $runspacePool.Close()
+        $runspacePool.Dispose()
+    }
+}

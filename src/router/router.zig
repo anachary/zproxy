@@ -1,291 +1,200 @@
 const std = @import("std");
+const config = @import("../config/config.zig");
+const logger = @import("../utils/logger.zig");
+const route = @import("route.zig");
 const matcher = @import("matcher.zig");
-const upstream_mod = @import("upstream.zig");
-const trie_mod = @import("trie.zig");
 
-/// Route configuration for initialization
-pub const RouteConfig = struct {
-    path: []const u8,
-    upstream: []const u8,
-    methods: []const []const u8,
-    middleware: []const []const u8,
-};
+pub const RouteParam = route.RouteParam;
+pub const RouteMatch = route.RouteMatch;
 
-/// Router for matching requests to routes
+/// Router for matching paths to routes
 pub const Router = struct {
     allocator: std.mem.Allocator,
-    routes: []const Route,
-    trie_router: trie_mod.TrieRouter,
-    route_cache: std.AutoHashMap(u64, *const Route),
+    routes: []config.Route,
 
-    /// Initialize a new Router
-    pub fn init(allocator: std.mem.Allocator, routes: []const RouteConfig) !Router {
-        // Convert config routes to our internal Route type
-        var internal_routes = try allocator.alloc(Route, routes.len);
-        errdefer allocator.free(internal_routes);
-
-        for (routes, 0..) |route, i| {
-            internal_routes[i] = try Route.fromConfig(allocator, route);
-        }
-
-        // Initialize the trie router
-        var trie_router = try trie_mod.TrieRouter.init(allocator);
-        errdefer trie_router.deinit();
-
-        // Add routes to the trie router
-        for (internal_routes, 0..) |route, i| {
-            for (route.methods) |method| {
-                try trie_router.addRoute(method, route.path_pattern, i);
-            }
-        }
-
-        // Initialize route cache
-        var route_cache = std.AutoHashMap(u64, *const Route).init(allocator);
-        errdefer route_cache.deinit();
-
+    /// Initialize the router
+    pub fn init(allocator: std.mem.Allocator, routes: []config.Route) !Router {
         return Router{
             .allocator = allocator,
-            .routes = internal_routes,
-            .trie_router = trie_router,
-            .route_cache = route_cache,
+            .routes = routes,
         };
     }
 
-    /// Clean up resources
+    /// Clean up router resources
     pub fn deinit(self: *Router) void {
-        for (self.routes) |route| {
-            var mutable_route = route;
-            mutable_route.deinit(self.allocator);
-        }
-        self.allocator.free(self.routes);
-        self.trie_router.deinit();
-        self.route_cache.deinit();
+        _ = self;
+        // Routes are owned by the config, so we don't free them here
     }
 
-    /// Hash a path and method for cache lookup
-    fn hashPathMethod(path: []const u8, method: []const u8) u64 {
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(path);
-        hasher.update(method);
-        return hasher.final();
-    }
+    /// Find a route that matches the given path and method
+    pub fn findRoute(self: *Router, path: []const u8, method: []const u8) ?*const config.Route {
+        logger.debug("Finding route for {s} {s}", .{ method, path });
 
-    /// Find a route matching the given path and method
-    pub fn findRoute(self: *Router, path: []const u8, method: []const u8) !?*const Route {
-        // Check cache first for fastest lookup
-        const hash = hashPathMethod(path, method);
-        if (self.route_cache.get(hash)) |route| {
-            return route;
-        }
-
-        // Use trie router for fast path matching
-        if (try self.trie_router.findRoute(method, path)) |route_index| {
-            const route = &self.routes[route_index];
-            try self.route_cache.put(hash, route);
-            return route;
-        }
-
-        // Fallback to linear search for complex patterns
-        for (self.routes) |*route| {
-            if (try route.matches(path, method)) {
-                try self.route_cache.put(hash, route);
-                return route;
-            }
-        }
-
-        return null;
-    }
-
-    /// Apply middleware for a route
-    pub fn applyMiddleware(self: *Router, context: *const @import("../middleware/types.zig").Context) !MiddlewareResult {
-        // Find the route that matches the context
-        for (self.routes) |*route| {
-            if (std.mem.eql(u8, route.path_pattern, context.route.path)) {
-                // Check if the route has any middleware
-                if (route.middleware.len == 0) {
-                    return MiddlewareResult{
-                        .success = true,
-                        .status_code = 200,
-                        .error_message = "",
-                    };
-                }
-
-                // For demonstration purposes, let's simulate middleware behavior
-                // In a real implementation, we would create and apply each middleware
-
-                // Check for JWT middleware
-                for (route.middleware) |mw| {
-                    if (std.mem.eql(u8, mw, "jwt")) {
-                        // Check for Authorization header
-                        const auth_header = context.request.headers.get("Authorization");
-                        if (auth_header == null or !std.mem.startsWith(u8, auth_header.?, "Bearer ")) {
-                            return MiddlewareResult{
-                                .success = false,
-                                .status_code = 401,
-                                .error_message = "Unauthorized: Missing or invalid JWT token",
-                            };
-                        }
+        for (self.routes) |*route_config| {
+            // Check if the route matches the path
+            if (matcher.matchPath(route_config.path, path)) {
+                // Check if the route allows the method
+                for (route_config.methods) |allowed_method| {
+                    if (std.mem.eql(u8, allowed_method, method)) {
+                        logger.debug("Found route: {s} -> {s}", .{ route_config.path, route_config.upstream });
+                        return route_config;
                     }
                 }
 
-                // All middleware passed
-                return MiddlewareResult{
-                    .success = true,
-                    .status_code = 200,
-                    .error_message = "",
-                };
+                // Route matches path but not method
+                logger.debug("Route {s} doesn't allow method {s}", .{ route_config.path, method });
+                return null;
             }
         }
 
         // No matching route found
-        return MiddlewareResult{
-            .success = false,
-            .status_code = 404,
-            .error_message = "Not Found",
-        };
-    }
-};
-
-/// A route in the router
-pub const Route = struct {
-    path_pattern: []const u8,
-    upstream_url: []const u8,
-    methods: []const []const u8,
-    middleware: []const []const u8,
-    matcher: matcher.PathMatcher,
-    upstream_pool: upstream_mod.ConnectionPool,
-
-    /// Alias for upstream_url to maintain compatibility
-    pub fn upstream(self: *const Route) []const u8 {
-        return self.upstream_url;
+        logger.debug("No route found for {s} {s}", .{ method, path });
+        return null;
     }
 
-    /// Create a Route from a configuration
-    pub fn fromConfig(allocator: std.mem.Allocator, config: RouteConfig) !Route {
-        // Create path matcher
-        var path_matcher = try matcher.PathMatcher.init(allocator, config.path);
-        errdefer path_matcher.deinit();
+    /// Find a route with parameter extraction
+    pub fn findRouteWithParams(self: *Router, path: []const u8, method: []const u8) !?RouteMatch {
+        logger.debug("Finding route with params for {s} {s}", .{ method, path });
 
-        // Create upstream connection pool
-        var pool = try upstream_mod.ConnectionPool.init(allocator, config.upstream);
-        errdefer pool.deinit();
+        for (self.routes) |*route_config| {
+            // Check if the route matches the path and extract parameters
+            if (try matcher.matchPathWithParams(self.allocator, route_config.path, path)) |params| {
+                // Check if the route allows the method
+                for (route_config.methods) |allowed_method| {
+                    if (std.mem.eql(u8, allowed_method, method)) {
+                        logger.debug("Found route with params: {s} -> {s}", .{ route_config.path, route_config.upstream });
+                        return RouteMatch{
+                            .route = route_config,
+                            .params = params,
+                        };
+                    }
+                }
 
-        // Pre-warm the connection pool with some connections
-        try pool.preWarm(5);
+                // Route matches path but not method
+                logger.debug("Route {s} doesn't allow method {s}", .{ route_config.path, method });
 
-        // Copy methods
-        var methods_copy = try allocator.alloc([]const u8, config.methods.len);
-        errdefer allocator.free(methods_copy);
+                // Free parameters
+                for (params) |param| {
+                    self.allocator.free(param.name);
+                    self.allocator.free(param.value);
+                }
+                self.allocator.free(params);
 
-        for (config.methods, 0..) |method, i| {
-            methods_copy[i] = try allocator.dupe(u8, method);
-        }
-
-        // Copy middleware
-        var middleware_copy = try allocator.alloc([]const u8, config.middleware.len);
-        errdefer {
-            for (methods_copy) |method| {
-                allocator.free(method);
-            }
-            allocator.free(middleware_copy);
-        }
-
-        for (config.middleware, 0..) |mw, i| {
-            middleware_copy[i] = try allocator.dupe(u8, mw);
-        }
-
-        return Route{
-            .path_pattern = try allocator.dupe(u8, config.path),
-            .upstream_url = try allocator.dupe(u8, config.upstream),
-            .methods = methods_copy,
-            .middleware = middleware_copy,
-            .matcher = path_matcher,
-            .upstream_pool = pool,
-        };
-    }
-
-    /// Clean up resources
-    pub fn deinit(self: *Route, allocator: std.mem.Allocator) void {
-        allocator.free(self.path_pattern);
-        allocator.free(self.upstream_url);
-
-        for (self.methods) |method| {
-            allocator.free(method);
-        }
-        allocator.free(self.methods);
-
-        for (self.middleware) |mw| {
-            allocator.free(mw);
-        }
-        allocator.free(self.middleware);
-
-        self.matcher.deinit();
-        self.upstream_pool.deinit();
-    }
-
-    /// Check if this route matches the given path and method
-    pub fn matches(self: *const Route, path: []const u8, method: []const u8) !bool {
-        // Check if the path matches
-        if (!try self.matcher.matches(path)) {
-            return false;
-        }
-
-        // Check if the method is allowed
-        for (self.methods) |allowed_method| {
-            if (std.mem.eql(u8, method, allowed_method)) {
-                return true;
+                return null;
             }
         }
 
-        return false;
+        // No matching route found
+        logger.debug("No route found for {s} {s}", .{ method, path });
+        return null;
     }
 
-    /// Get a connection to the upstream server
-    pub fn getUpstreamConnection(self: *Route) !upstream_mod.Connection {
-        return self.upstream_pool.getConnection();
-    }
+    // Path matching is now in matcher.zig
 };
 
-/// Result of applying middleware
-pub const MiddlewareResult = struct {
-    success: bool,
-    status_code: u16,
-    error_message: []const u8,
-};
-
-// Tests
-test "Router initialization" {
+test "Router - Exact Match" {
     const testing = std.testing;
-    const allocator = testing.allocator;
 
-    // Use the RouteConfig type for the test
-    const TestRoute = RouteConfig;
-
-    const routes = [_]TestRoute{
+    // Create test routes
+    var routes = [_]config.Route{
         .{
             .path = "/api/users",
-            .upstream = "http://users-service:8080",
+            .upstream = "http://users-service",
             .methods = &[_][]const u8{ "GET", "POST" },
-            .middleware = &[_][]const u8{ "auth", "ratelimit" },
         },
         .{
             .path = "/api/products",
-            .upstream = "http://products-service:8080",
+            .upstream = "http://products-service",
             .methods = &[_][]const u8{"GET"},
-            .middleware = &[_][]const u8{"cache"},
         },
     };
 
-    var router = try Router.init(allocator, &routes);
+    // Create router
+    var router = try Router.init(testing.allocator, &routes);
     defer router.deinit();
 
-    try testing.expectEqual(@as(usize, 2), router.routes.len);
-    try testing.expectEqualStrings("/api/users", router.routes[0].path_pattern);
-    try testing.expectEqualStrings("http://users-service:8080", router.routes[0].upstream_url);
-    try testing.expectEqual(@as(usize, 2), router.routes[0].methods.len);
-    try testing.expectEqualStrings("GET", router.routes[0].methods[0]);
-    try testing.expectEqualStrings("POST", router.routes[0].methods[1]);
-    try testing.expectEqual(@as(usize, 2), router.routes[0].middleware.len);
-    try testing.expectEqualStrings("auth", router.routes[0].middleware[0]);
-    try testing.expectEqualStrings("ratelimit", router.routes[0].middleware[1]);
+    // Test exact matches
+    const route1 = router.findRoute("/api/users", "GET");
+    try testing.expect(route1 != null);
+    try testing.expectEqualStrings("/api/users", route1.?.path);
+    try testing.expectEqualStrings("http://users-service", route1.?.upstream);
+
+    const route2 = router.findRoute("/api/products", "GET");
+    try testing.expect(route2 != null);
+    try testing.expectEqualStrings("/api/products", route2.?.path);
+    try testing.expectEqualStrings("http://products-service", route2.?.upstream);
+
+    // Test method not allowed
+    const route3 = router.findRoute("/api/products", "POST");
+    try testing.expect(route3 == null);
+
+    // Test path not found
+    const route4 = router.findRoute("/api/orders", "GET");
+    try testing.expect(route4 == null);
+}
+
+test "Router - Wildcard Match" {
+    const testing = std.testing;
+
+    // Create test routes
+    var routes = [_]config.Route{
+        .{
+            .path = "/api/*",
+            .upstream = "http://api-gateway",
+            .methods = &[_][]const u8{ "GET", "POST" },
+        },
+    };
+
+    // Create router
+    var router = try Router.init(testing.allocator, &routes);
+    defer router.deinit();
+
+    // Test wildcard matches
+    const route1 = router.findRoute("/api/users", "GET");
+    try testing.expect(route1 != null);
+    try testing.expectEqualStrings("/api/*", route1.?.path);
+    try testing.expectEqualStrings("http://api-gateway", route1.?.upstream);
+
+    const route2 = router.findRoute("/api/products/123", "POST");
+    try testing.expect(route2 != null);
+    try testing.expectEqualStrings("/api/*", route2.?.path);
+    try testing.expectEqualStrings("http://api-gateway", route2.?.upstream);
+
+    // Test non-matching path
+    const route3 = router.findRoute("/web/index.html", "GET");
+    try testing.expect(route3 == null);
+}
+
+test "Router - Parameter Match" {
+    const testing = std.testing;
+
+    // Create test routes
+    var routes = [_]config.Route{
+        .{
+            .path = "/api/users/:id",
+            .upstream = "http://users-service",
+            .methods = &[_][]const u8{"GET"},
+        },
+    };
+
+    // Create router
+    var router = try Router.init(testing.allocator, &routes);
+    defer router.deinit();
+
+    // Test parameter match
+    const route1 = router.findRoute("/api/users/123", "GET");
+    try testing.expect(route1 != null);
+    try testing.expectEqualStrings("/api/users/:id", route1.?.path);
+    try testing.expectEqualStrings("http://users-service", route1.?.upstream);
+
+    // Test parameter extraction
+    const match = try router.findRouteWithParams("/api/users/123", "GET");
+    try testing.expect(match != null);
+    defer match.?.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("/api/users/:id", match.?.route.path);
+    try testing.expectEqualStrings("http://users-service", match.?.route.upstream);
+    try testing.expectEqual(@as(usize, 1), match.?.params.len);
+    try testing.expectEqualStrings("id", match.?.params[0].name);
+    try testing.expectEqualStrings("123", match.?.params[0].value);
 }

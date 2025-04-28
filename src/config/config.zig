@@ -1,144 +1,45 @@
 const std = @import("std");
-const defaults = @import("defaults.zig");
 
-/// Configuration for the gateway
-pub const Config = struct {
-    allocator: std.mem.Allocator,
-    listen_address: []const u8,
-    listen_port: u16,
-    routes: []Route,
-    tls: TlsConfig,
-    middleware: MiddlewareConfig,
+/// Protocol types supported by ZProxy
+pub const Protocol = enum {
+    http1,
+    http2,
+    websocket,
+};
 
-    /// Initialize a new Config with default values
-    pub fn init(allocator: std.mem.Allocator) !Config {
-        const listen_address = try allocator.dupe(u8, defaults.listen_address);
-        const routes = try allocator.alloc(Route, 0);
+/// Middleware configuration
+pub const MiddlewareConfig = struct {
+    type: []const u8,
+    config: std.json.Value,
 
-        return Config{
-            .allocator = allocator,
-            .listen_address = listen_address,
-            .listen_port = defaults.listen_port,
-            .routes = routes,
-            .tls = TlsConfig.init(),
-            .middleware = MiddlewareConfig.init(),
-        };
-    }
-
-    /// Load configuration from a JSON file
-    pub fn loadFromFile(allocator: std.mem.Allocator, file_path: []const u8) !Config {
-        const file = try std.fs.cwd().openFile(file_path, .{});
-        defer file.close();
-
-        const file_size = try file.getEndPos();
-        const buffer = try allocator.alloc(u8, file_size);
-        defer allocator.free(buffer);
-
-        const bytes_read = try file.readAll(buffer);
-        if (bytes_read != file_size) {
-            return error.IncompleteRead;
-        }
-
-        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, buffer, .{});
-        defer parsed.deinit();
-
-        return try parseConfig(allocator, parsed.value);
-    }
-
-    /// Parse configuration from a JSON value
-    fn parseConfig(allocator: std.mem.Allocator, root: std.json.Value) !Config {
-        var config = try Config.init(allocator);
-        errdefer config.deinit();
-
-        // Parse listen address and port
-        if (root.object.get("listen_address")) |addr| {
-            allocator.free(config.listen_address);
-            config.listen_address = try allocator.dupe(u8, addr.string);
-        }
-
-        if (root.object.get("listen_port")) |port| {
-            config.listen_port = @intCast(port.integer);
-        }
-
-        // Parse routes
-        if (root.object.get("routes")) |routes_json| {
-            allocator.free(config.routes);
-            config.routes = try parseRoutes(allocator, routes_json);
-        }
-
-        // Parse TLS config
-        if (root.object.get("tls")) |tls_json| {
-            config.tls = try TlsConfig.parse(allocator, tls_json);
-        }
-
-        // Parse middleware config
-        if (root.object.get("middleware")) |middleware_json| {
-            config.middleware = try MiddlewareConfig.parse(allocator, middleware_json);
-        }
-
-        return config;
-    }
-
-    /// Clean up resources
-    pub fn deinit(self: *Config) void {
-        self.allocator.free(self.listen_address);
-
-        for (self.routes) |*route| {
-            route.deinit(self.allocator);
-        }
-        self.allocator.free(self.routes);
-
-        self.tls.deinit(self.allocator);
-        self.middleware.deinit(self.allocator);
+    pub fn deinit(self: *MiddlewareConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.type);
+        // The config value is freed separately
     }
 };
 
-/// Configuration for a route
+/// TLS configuration
+pub const TlsConfig = struct {
+    enabled: bool,
+    cert_file: ?[]const u8,
+    key_file: ?[]const u8,
+
+    pub fn deinit(self: *TlsConfig, allocator: std.mem.Allocator) void {
+        if (self.cert_file) |cert_file| {
+            allocator.free(cert_file);
+        }
+        if (self.key_file) |key_file| {
+            allocator.free(key_file);
+        }
+    }
+};
+
+/// Route configuration
 pub const Route = struct {
     path: []const u8,
     upstream: []const u8,
     methods: []const []const u8,
-    middleware: []const []const u8,
 
-    /// Initialize a new Route
-    pub fn init(
-        allocator: std.mem.Allocator,
-        path: []const u8,
-        upstream: []const u8,
-        methods: []const []const u8,
-        middleware: []const []const u8,
-    ) !Route {
-        const path_copy = try allocator.dupe(u8, path);
-        const upstream_copy = try allocator.dupe(u8, upstream);
-
-        const methods_copy = try allocator.alloc([]const u8, methods.len);
-        errdefer allocator.free(methods_copy);
-
-        for (methods, 0..) |method, i| {
-            methods_copy[i] = try allocator.dupe(u8, method);
-        }
-
-        const middleware_copy = try allocator.alloc([]const u8, middleware.len);
-        errdefer {
-            for (methods_copy) |method| {
-                allocator.free(method);
-            }
-            allocator.free(middleware_copy);
-        }
-
-        for (middleware, 0..) |mw, i| {
-            middleware_copy[i] = try allocator.dupe(u8, mw);
-        }
-
-        return Route{
-            .path = path_copy,
-            .upstream = upstream_copy,
-            .methods = methods_copy,
-            .middleware = middleware_copy,
-        };
-    }
-
-    /// Clean up resources
     pub fn deinit(self: *Route, allocator: std.mem.Allocator) void {
         allocator.free(self.path);
         allocator.free(self.upstream);
@@ -147,252 +48,125 @@ pub const Route = struct {
             allocator.free(method);
         }
         allocator.free(self.methods);
-
-        for (self.middleware) |mw| {
-            allocator.free(mw);
-        }
-        allocator.free(self.middleware);
     }
 };
 
-/// Parse routes from JSON
-fn parseRoutes(allocator: std.mem.Allocator, routes_json: std.json.Value) ![]Route {
-    const routes_array = routes_json.array;
-    var routes = try allocator.alloc(Route, routes_array.items.len);
-    errdefer allocator.free(routes);
+/// Main configuration structure
+pub const Config = struct {
+    // Server configuration
+    host: []const u8,
+    port: u16,
 
-    for (routes_array.items, 0..) |route_json, i| {
-        const path = route_json.object.get("path").?.string;
-        const upstream = route_json.object.get("upstream").?.string;
+    // Performance configuration
+    thread_count: u32,
+    backlog: u32,
+    max_connections: u32,
+    connection_timeout_ms: u32,
 
-        // Parse methods
-        const methods_json = route_json.object.get("methods").?.array;
-        var methods = try allocator.alloc([]const u8, methods_json.items.len);
-        errdefer allocator.free(methods);
+    // Protocol configuration
+    protocols: []const Protocol,
 
-        for (methods_json.items, 0..) |method_json, j| {
-            methods[j] = try allocator.dupe(u8, method_json.string);
+    // TLS configuration
+    tls: TlsConfig,
+
+    // Routing configuration
+    routes: []Route,
+
+    // Middleware configuration
+    middlewares: []MiddlewareConfig,
+
+    // Store the allocator for cleanup
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *Config) void {
+        const allocator = self.allocator;
+
+        allocator.free(self.host);
+        allocator.free(self.protocols);
+
+        self.tls.deinit(allocator);
+
+        for (self.routes) |*route| {
+            route.deinit(allocator);
         }
+        allocator.free(self.routes);
 
-        // Parse middleware
-        const middleware_json = route_json.object.get("middleware").?.array;
-        var middleware = try allocator.alloc([]const u8, middleware_json.items.len);
-        errdefer {
-            for (methods) |method| {
-                allocator.free(method);
-            }
-            allocator.free(middleware);
+        for (self.middlewares) |*middleware| {
+            middleware.deinit(allocator);
         }
-
-        for (middleware_json.items, 0..) |mw_json, j| {
-            middleware[j] = try allocator.dupe(u8, mw_json.string);
-        }
-
-        routes[i] = Route{
-            .path = try allocator.dupe(u8, path),
-            .upstream = try allocator.dupe(u8, upstream),
-            .methods = methods,
-            .middleware = middleware,
-        };
+        allocator.free(self.middlewares);
     }
+};
 
-    return routes;
+// Configuration loading is now in loader.zig
+
+/// Get default configuration
+pub fn getDefaultConfig(allocator: std.mem.Allocator) Config {
+    const host = allocator.dupe(u8, "127.0.0.1") catch unreachable;
+
+    var protocols = allocator.alloc(Protocol, 1) catch unreachable;
+    protocols[0] = .http1;
+
+    var routes = allocator.alloc(Route, 1) catch unreachable;
+
+    const path = allocator.dupe(u8, "/") catch unreachable;
+    const upstream = allocator.dupe(u8, "http://127.0.0.1:8080") catch unreachable;
+
+    var methods = allocator.alloc([]const u8, 1) catch unreachable;
+    methods[0] = allocator.dupe(u8, "GET") catch unreachable;
+
+    routes[0] = Route{
+        .path = path,
+        .upstream = upstream,
+        .methods = methods,
+    };
+
+    // Create default middleware configuration
+    var middlewares = allocator.alloc(MiddlewareConfig, 0) catch unreachable;
+
+    return Config{
+        .host = host,
+        .port = 8000,
+        .thread_count = 4,
+        .backlog = 128,
+        .max_connections = 1000,
+        .connection_timeout_ms = 30000,
+        .protocols = protocols,
+        .tls = TlsConfig{
+            .enabled = false,
+            .cert_file = null,
+            .key_file = null,
+        },
+        .routes = routes,
+        .middlewares = middlewares,
+        .allocator = allocator,
+    };
 }
 
-/// TLS configuration
-pub const TlsConfig = struct {
-    enabled: bool,
-    cert_path: ?[]const u8,
-    key_path: ?[]const u8,
-
-    /// Initialize with default values
-    pub fn init() TlsConfig {
-        return TlsConfig{
-            .enabled = defaults.tls_enabled,
-            .cert_path = null,
-            .key_path = null,
-        };
-    }
-
-    /// Parse TLS config from JSON
-    pub fn parse(allocator: std.mem.Allocator, json: std.json.Value) !TlsConfig {
-        var config = TlsConfig.init();
-
-        if (json.object.get("enabled")) |enabled| {
-            config.enabled = enabled.bool;
-        }
-
-        if (json.object.get("cert_path")) |cert_path| {
-            config.cert_path = try allocator.dupe(u8, cert_path.string);
-        }
-
-        if (json.object.get("key_path")) |key_path| {
-            config.key_path = try allocator.dupe(u8, key_path.string);
-        }
-
-        return config;
-    }
-
-    /// Clean up resources
-    pub fn deinit(self: *TlsConfig, allocator: std.mem.Allocator) void {
-        if (self.cert_path) |cert_path| {
-            allocator.free(cert_path);
-            self.cert_path = null;
-        }
-
-        if (self.key_path) |key_path| {
-            allocator.free(key_path);
-            self.key_path = null;
-        }
-    }
-};
-
-/// Middleware configuration
-pub const MiddlewareConfig = struct {
-    rate_limit: RateLimitConfig,
-    auth: AuthConfig,
-    cache: CacheConfig,
-
-    /// Initialize with default values
-    pub fn init() MiddlewareConfig {
-        return MiddlewareConfig{
-            .rate_limit = RateLimitConfig.init(),
-            .auth = AuthConfig.init(),
-            .cache = CacheConfig.init(),
-        };
-    }
-
-    /// Parse middleware config from JSON
-    pub fn parse(allocator: std.mem.Allocator, json: std.json.Value) !MiddlewareConfig {
-        var config = MiddlewareConfig.init();
-
-        if (json.object.get("rate_limit")) |rate_limit| {
-            config.rate_limit = try RateLimitConfig.parse(rate_limit);
-        }
-
-        if (json.object.get("auth")) |auth| {
-            config.auth = try AuthConfig.parse(allocator, auth);
-        }
-
-        if (json.object.get("cache")) |cache| {
-            config.cache = try CacheConfig.parse(cache);
-        }
-
-        return config;
-    }
-
-    /// Clean up resources
-    pub fn deinit(self: *MiddlewareConfig, allocator: std.mem.Allocator) void {
-        self.auth.deinit(allocator);
-    }
-};
-
-/// Rate limiting configuration
-pub const RateLimitConfig = struct {
-    enabled: bool,
-    requests_per_minute: u32,
-
-    /// Initialize with default values
-    pub fn init() RateLimitConfig {
-        return RateLimitConfig{
-            .enabled = defaults.rate_limit_enabled,
-            .requests_per_minute = defaults.rate_limit_requests_per_minute,
-        };
-    }
-
-    /// Parse rate limit config from JSON
-    pub fn parse(json: std.json.Value) !RateLimitConfig {
-        var config = RateLimitConfig.init();
-
-        if (json.object.get("enabled")) |enabled| {
-            config.enabled = enabled.bool;
-        }
-
-        if (json.object.get("requests_per_minute")) |rpm| {
-            config.requests_per_minute = @intCast(rpm.integer);
-        }
-
-        return config;
-    }
-};
-
-/// Authentication configuration
-pub const AuthConfig = struct {
-    enabled: bool,
-    jwt_secret: ?[]const u8,
-
-    /// Initialize with default values
-    pub fn init() AuthConfig {
-        return AuthConfig{
-            .enabled = defaults.auth_enabled,
-            .jwt_secret = null,
-        };
-    }
-
-    /// Parse auth config from JSON
-    pub fn parse(allocator: std.mem.Allocator, json: std.json.Value) !AuthConfig {
-        var config = AuthConfig.init();
-
-        if (json.object.get("enabled")) |enabled| {
-            config.enabled = enabled.bool;
-        }
-
-        if (json.object.get("jwt_secret")) |secret| {
-            config.jwt_secret = try allocator.dupe(u8, secret.string);
-        }
-
-        return config;
-    }
-
-    /// Clean up resources
-    pub fn deinit(self: *AuthConfig, allocator: std.mem.Allocator) void {
-        if (self.jwt_secret) |secret| {
-            allocator.free(secret);
-            self.jwt_secret = null;
-        }
-    }
-};
-
-/// Cache configuration
-pub const CacheConfig = struct {
-    enabled: bool,
-    ttl_seconds: u32,
-
-    /// Initialize with default values
-    pub fn init() CacheConfig {
-        return CacheConfig{
-            .enabled = defaults.cache_enabled,
-            .ttl_seconds = defaults.cache_ttl_seconds,
-        };
-    }
-
-    /// Parse cache config from JSON
-    pub fn parse(json: std.json.Value) !CacheConfig {
-        var config = CacheConfig.init();
-
-        if (json.object.get("enabled")) |enabled| {
-            config.enabled = enabled.bool;
-        }
-
-        if (json.object.get("ttl_seconds")) |ttl| {
-            config.ttl_seconds = @intCast(ttl.integer);
-        }
-
-        return config;
-    }
-};
-
-// Tests
-test "Config initialization" {
+test "Config - Default Configuration" {
     const testing = std.testing;
-    const allocator = testing.allocator;
-
-    var config = try Config.init(allocator);
+    var config = getDefaultConfig(testing.allocator);
     defer config.deinit();
 
-    try testing.expectEqualStrings(defaults.listen_address, config.listen_address);
-    try testing.expectEqual(@as(u16, defaults.listen_port), config.listen_port);
-    try testing.expectEqual(@as(usize, 0), config.routes.len);
-    try testing.expectEqual(defaults.tls_enabled, config.tls.enabled);
-    try testing.expectEqual(defaults.rate_limit_enabled, config.middleware.rate_limit.enabled);
+    try testing.expectEqualStrings("127.0.0.1", config.host);
+    try testing.expectEqual(@as(u16, 8000), config.port);
+    try testing.expectEqual(@as(u32, 4), config.thread_count);
+    try testing.expectEqual(@as(u32, 128), config.backlog);
+    try testing.expectEqual(@as(u32, 1000), config.max_connections);
+    try testing.expectEqual(@as(u32, 30000), config.connection_timeout_ms);
+
+    try testing.expectEqual(@as(usize, 1), config.protocols.len);
+    try testing.expectEqual(Protocol.http1, config.protocols[0]);
+
+    try testing.expectEqual(false, config.tls.enabled);
+    try testing.expectEqual(@as(?[]const u8, null), config.tls.cert_file);
+    try testing.expectEqual(@as(?[]const u8, null), config.tls.key_file);
+
+    try testing.expectEqual(@as(usize, 1), config.routes.len);
+    try testing.expectEqualStrings("/", config.routes[0].path);
+    try testing.expectEqualStrings("http://127.0.0.1:8080", config.routes[0].upstream);
+    try testing.expectEqual(@as(usize, 1), config.routes[0].methods.len);
+    try testing.expectEqualStrings("GET", config.routes[0].methods[0]);
+
+    try testing.expectEqual(@as(usize, 0), config.middlewares.len);
 }

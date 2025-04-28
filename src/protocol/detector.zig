@@ -1,148 +1,154 @@
 const std = @import("std");
+const logger = @import("../utils/logger.zig");
 
-// Import protocol handlers
-pub const http1 = @import("http1/handler.zig");
-pub const http2 = @import("http2/handler.zig");
-pub const websocket = @import("websocket/handler.zig");
-
-/// Supported protocols
-pub const Protocol = enum {
+/// Protocol types that can be detected
+pub const DetectedProtocol = enum {
     http1,
     http2,
     websocket,
     unknown,
 };
 
-/// Detect the protocol from the initial bytes of a connection
-pub fn detectProtocol(conn_context: anytype) !Protocol {
-    const logger = std.log.scoped(.protocol_detector);
+/// Detect the protocol from a stream
+pub fn detectProtocol(stream: std.net.Stream) !DetectedProtocol {
+    // Read the first few bytes to detect the protocol
+    var buffer: [24]u8 = undefined;
+    const bytes_read = try stream.peek(&buffer);
     
-    // Read initial bytes from the connection
-    const bytes_read = try conn_context.connection.stream.read(conn_context.buffer);
     if (bytes_read == 0) {
-        logger.debug("Connection closed before protocol detection", .{});
-        return Protocol.unknown;
+        logger.debug("Empty connection", .{});
+        return .unknown;
     }
     
     // Check for HTTP/2 preface
-    if (bytes_read >= 24 and std.mem.eql(u8, conn_context.buffer[0..24], "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
-        logger.debug("Detected HTTP/2 protocol", .{});
-        return Protocol.http2;
+    if (bytes_read >= 24 and std.mem.eql(u8, buffer[0..24], "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
+        logger.debug("Detected HTTP/2 preface", .{});
+        return .http2;
     }
     
-    // Check for HTTP/1.x
-    if (bytes_read >= 4 and (
-        std.mem.eql(u8, conn_context.buffer[0..4], "GET ") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "POST") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "PUT ") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "DELE") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "HEAD") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "OPTI") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "PATC") or
-        std.mem.eql(u8, conn_context.buffer[0..4], "TRAC")
-    )) {
-        // Check for WebSocket upgrade
-        if (isWebSocketUpgrade(conn_context.buffer[0..bytes_read])) {
-            logger.debug("Detected WebSocket protocol", .{});
-            return Protocol.websocket;
+    // Check for HTTP/1.x methods
+    const http_methods = [_][]const u8{
+        "GET ",
+        "POST ",
+        "PUT ",
+        "DELETE ",
+        "HEAD ",
+        "OPTIONS ",
+        "PATCH ",
+        "CONNECT ",
+        "TRACE ",
+    };
+    
+    for (http_methods) |method| {
+        if (bytes_read >= method.len and std.mem.eql(u8, buffer[0..method.len], method)) {
+            logger.debug("Detected HTTP/1.1 method: {s}", .{method});
+            return .http1;
         }
-        
-        logger.debug("Detected HTTP/1.x protocol", .{});
-        return Protocol.http1;
     }
     
-    logger.warn("Unknown protocol", .{});
-    return Protocol.unknown;
+    // Check for WebSocket upgrade request
+    if (isWebSocketUpgrade(buffer[0..bytes_read])) {
+        logger.debug("Detected WebSocket upgrade request", .{});
+        return .websocket;
+    }
+    
+    // Unknown protocol
+    logger.debug("Unknown protocol: {s}", .{buffer[0..@min(bytes_read, 16)]});
+    return .unknown;
 }
 
-/// Check if the HTTP request is a WebSocket upgrade
+/// Check if a buffer contains a WebSocket upgrade request
 fn isWebSocketUpgrade(buffer: []const u8) bool {
-    // Look for "Upgrade: websocket" and "Connection: Upgrade" headers
-    return std.mem.indexOf(u8, buffer, "Upgrade: websocket") != null and
-           std.mem.indexOf(u8, buffer, "Connection: Upgrade") != null;
+    // WebSocket upgrade requests are HTTP/1.1 requests with specific headers
+    // This is a simplified check that looks for "Upgrade: websocket"
+    return std.mem.indexOf(u8, buffer, "Upgrade: websocket") != null or
+           std.mem.indexOf(u8, buffer, "Upgrade: WebSocket") != null;
 }
 
-// Tests
-test "Protocol detection - HTTP/1.1" {
+test "Protocol Detection - HTTP/1.1" {
     const testing = std.testing;
     
-    // Mock connection context
-    var buffer: [1024]u8 = undefined;
-    _ = std.mem.copy(u8, &buffer, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    // Create a pipe for testing
+    var pipe = try std.os.pipe();
+    defer std.os.close(pipe[0]);
+    defer std.os.close(pipe[1]);
     
-    var mock_context = MockConnectionContext{
-        .buffer = &buffer,
-        .bytes_read = 40,
-    };
+    // Create a stream from the pipe
+    var stream = std.net.Stream{ .handle = pipe[0] };
     
-    const protocol = try mockDetectProtocol(&mock_context);
-    try testing.expectEqual(Protocol.http1, protocol);
+    // Write an HTTP/1.1 request to the pipe
+    const request = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    _ = try std.os.write(pipe[1], request);
+    
+    // Detect the protocol
+    const detected = try detectProtocol(stream);
+    
+    // Check that HTTP/1.1 was detected
+    try testing.expectEqual(DetectedProtocol.http1, detected);
 }
 
-test "Protocol detection - HTTP/2" {
+test "Protocol Detection - HTTP/2" {
     const testing = std.testing;
     
-    // Mock connection context
-    var buffer: [1024]u8 = undefined;
-    _ = std.mem.copy(u8, &buffer, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nSome data");
+    // Create a pipe for testing
+    var pipe = try std.os.pipe();
+    defer std.os.close(pipe[0]);
+    defer std.os.close(pipe[1]);
     
-    var mock_context = MockConnectionContext{
-        .buffer = &buffer,
-        .bytes_read = 30,
-    };
+    // Create a stream from the pipe
+    var stream = std.net.Stream{ .handle = pipe[0] };
     
-    const protocol = try mockDetectProtocol(&mock_context);
-    try testing.expectEqual(Protocol.http2, protocol);
+    // Write an HTTP/2 preface to the pipe
+    const preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    _ = try std.os.write(pipe[1], preface);
+    
+    // Detect the protocol
+    const detected = try detectProtocol(stream);
+    
+    // Check that HTTP/2 was detected
+    try testing.expectEqual(DetectedProtocol.http2, detected);
 }
 
-test "Protocol detection - WebSocket" {
+test "Protocol Detection - WebSocket" {
     const testing = std.testing;
     
-    // Mock connection context
-    var buffer: [1024]u8 = undefined;
-    _ = std.mem.copy(
-        u8,
-        &buffer,
-        "GET / HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-    );
+    // Create a pipe for testing
+    var pipe = try std.os.pipe();
+    defer std.os.close(pipe[0]);
+    defer std.os.close(pipe[1]);
     
-    var mock_context = MockConnectionContext{
-        .buffer = &buffer,
-        .bytes_read = 80,
-    };
+    // Create a stream from the pipe
+    var stream = std.net.Stream{ .handle = pipe[0] };
     
-    const protocol = try mockDetectProtocol(&mock_context);
-    try testing.expectEqual(Protocol.websocket, protocol);
+    // Write a WebSocket upgrade request to the pipe
+    const request = "GET / HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+    _ = try std.os.write(pipe[1], request);
+    
+    // Detect the protocol
+    const detected = try detectProtocol(stream);
+    
+    // Check that WebSocket was detected
+    try testing.expectEqual(DetectedProtocol.websocket, detected);
 }
 
-// Mock types for testing
-const MockConnectionContext = struct {
-    buffer: []u8,
-    bytes_read: usize,
-};
-
-fn mockDetectProtocol(mock_context: *MockConnectionContext) !Protocol {
-    if (mock_context.bytes_read >= 24 and 
-        std.mem.eql(u8, mock_context.buffer[0..24], "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
-        return Protocol.http2;
-    }
+test "Protocol Detection - Unknown" {
+    const testing = std.testing;
     
-    if (mock_context.bytes_read >= 4 and (
-        std.mem.eql(u8, mock_context.buffer[0..4], "GET ") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "POST") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "PUT ") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "DELE") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "HEAD") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "OPTI") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "PATC") or
-        std.mem.eql(u8, mock_context.buffer[0..4], "TRAC")
-    )) {
-        if (isWebSocketUpgrade(mock_context.buffer[0..mock_context.bytes_read])) {
-            return Protocol.websocket;
-        }
-        
-        return Protocol.http1;
-    }
+    // Create a pipe for testing
+    var pipe = try std.os.pipe();
+    defer std.os.close(pipe[0]);
+    defer std.os.close(pipe[1]);
     
-    return Protocol.unknown;
+    // Create a stream from the pipe
+    var stream = std.net.Stream{ .handle = pipe[0] };
+    
+    // Write some random data to the pipe
+    const data = "This is not a valid HTTP request";
+    _ = try std.os.write(pipe[1], data);
+    
+    // Detect the protocol
+    const detected = try detectProtocol(stream);
+    
+    // Check that the protocol is unknown
+    try testing.expectEqual(DetectedProtocol.unknown, detected);
 }

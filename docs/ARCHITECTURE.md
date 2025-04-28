@@ -1,24 +1,23 @@
 # ZProxy Architecture
 
-This document provides an overview of the ZProxy architecture.
+This document provides an overview of the ZProxy architecture, explaining the key components and how they interact.
 
 ## Overview
 
-The gateway is designed as a reverse proxy that routes incoming requests to upstream services based on configurable rules. It supports multiple protocols (HTTP/1.1, HTTP/2, WebSocket) and provides middleware for common functionality like authentication, rate limiting, and caching.
+ZProxy is designed as a high-performance reverse proxy that routes incoming requests to upstream services based on configurable rules. It supports multiple protocols (HTTP/1.1, HTTP/2, WebSocket) and provides middleware for common functionality like authentication, rate limiting, and caching.
 
 ## Components
 
 ### Core Components
 
-- **Gateway**: The main entry point that handles incoming connections and manages the lifecycle of the gateway.
+- **Server**: The main entry point that handles incoming connections and manages the lifecycle of the proxy.
 - **Router**: Matches incoming requests to routes and applies middleware.
 - **Protocol Handlers**: Detect and handle different protocols (HTTP/1.1, HTTP/2, WebSocket).
-- **Middleware**: Provides cross-cutting functionality like authentication, rate limiting, and caching.
-- **Configuration**: Manages gateway configuration from files or code.
+- **Configuration**: Manages proxy configuration from files or code.
 
 ### Protocol Handling
 
-The gateway supports multiple protocols:
+The proxy supports multiple protocols:
 
 1. **HTTP/1.1**: Standard HTTP protocol with support for all HTTP methods.
 2. **HTTP/2**: Modern HTTP protocol with multiplexing and header compression.
@@ -36,32 +35,23 @@ The router matches incoming requests to routes based on the URL path and HTTP me
 
 ### Middleware
 
-Middleware provides cross-cutting functionality that can be applied to routes:
+The middleware system processes requests before they are forwarded to upstream services. It supports:
 
-- **Authentication**: Validates JWT tokens and enforces access control.
-- **Rate Limiting**: Limits the number of requests a client can make in a time period.
-- **Caching**: Caches responses to improve performance.
-
-Middleware can be configured globally or per-route.
+- **Authentication**: Verify API keys or other credentials.
+- **Rate Limiting**: Limit the number of requests from a client.
+- **CORS**: Handle Cross-Origin Resource Sharing.
+- **Caching**: Cache responses to improve performance.
 
 ### TLS
 
-The gateway supports TLS for secure connections:
+The proxy supports TLS for secure connections:
 
 - **Certificate Management**: Loads and manages TLS certificates.
 - **SNI Support**: Uses different certificates for different domains.
 
-### Metrics
-
-The gateway collects metrics to monitor its performance:
-
-- **Request Counters**: Count the number of requests by route, method, and status code.
-- **Latency Histograms**: Measure the time taken to process requests.
-- **Connection Gauges**: Track the number of active connections.
-
 ## Data Flow
 
-1. A client connects to the gateway.
+1. A client connects to the proxy.
 2. The protocol detector identifies the protocol being used.
 3. The protocol handler parses the request.
 4. The router finds a matching route for the request.
@@ -71,7 +61,7 @@ The gateway collects metrics to monitor its performance:
 
 ## Concurrency Model
 
-The gateway uses a thread-per-connection model for handling requests:
+The proxy uses a thread-per-connection model for handling requests:
 
 1. The main thread accepts new connections.
 2. Each connection is handled in a separate thread.
@@ -79,18 +69,62 @@ The gateway uses a thread-per-connection model for handling requests:
 
 ## Error Handling
 
-The gateway handles errors at different levels:
+The proxy handles errors at different levels:
 
 - **Protocol Errors**: Invalid requests are rejected with appropriate status codes.
 - **Routing Errors**: Requests that don't match any route receive a 404 response.
-- **Middleware Errors**: Middleware can reject requests with custom status codes and messages.
 - **Upstream Errors**: Errors from upstream services are logged and proxied back to the client.
-- **Gateway Errors**: Internal errors are logged and result in a 500 response.
+- **Proxy Errors**: Internal errors are logged and result in a 500 response.
 
 ## Extensibility
 
-The gateway is designed to be extensible:
+The proxy is designed to be extensible:
 
-- **Custom Middleware**: New middleware can be added by implementing the middleware interface.
+- **Middleware**: New middleware can be added by implementing the middleware interface.
 - **Protocol Extensions**: Support for new protocols can be added by implementing a protocol handler.
 - **Configuration Extensions**: The configuration system can be extended to support new options.
+
+## Performance Optimizations
+
+The proxy includes several performance optimizations:
+
+- **Zero-Copy**: Minimizes memory copying for better performance.
+- **Buffer Pooling**: Reuses buffers to reduce memory allocations.
+- **Connection Pooling**: Maintains connections to upstream services.
+- **NUMA Awareness**: Optimizes for multi-socket systems.
+
+## Configuration
+
+The proxy is configured using a JSON file that specifies:
+
+- **Server Settings**: Host, port, thread count, etc.
+- **Protocol Settings**: Enabled protocols and their options.
+- **TLS Settings**: Certificate and key files.
+- **Routes**: Path patterns, upstream services, and allowed methods.
+- **Middleware**: Middleware configuration for authentication, rate limiting, etc.
+
+## Deployment
+
+The proxy can be deployed in various ways:
+
+- **Standalone**: Run as a standalone service.
+- **Docker**: Run in a Docker container.
+- **Kubernetes**: Deploy as part of a Kubernetes cluster.
+
+## Monitoring
+
+The proxy provides monitoring through:
+
+- **Logging**: Detailed logs for debugging and auditing.
+- **Metrics**: Performance metrics for monitoring.
+- **Health Checks**: Endpoints for checking the proxy's health.
+
+## Future Enhancements
+
+Planned enhancements include:
+
+- **HTTP/3 Support**: Add support for the HTTP/3 protocol.
+- **Dynamic Configuration**: Allow configuration changes without restarting.
+- **Plugin System**: Support for third-party plugins.
+- **Advanced Routing**: Support for more complex routing rules.
+- **Load Balancing**: Distribute requests across multiple upstream services.

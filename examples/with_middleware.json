@@ -1,0 +1,52 @@
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "thread_count": 4,
+  "backlog": 128,
+  "max_connections": 1000,
+  "connection_timeout_ms": 30000,
+  "protocols": ["http1", "http2", "websocket"],
+  "tls": {
+    "enabled": false,
+    "cert_file": null,
+    "key_file": null
+  },
+  "routes": [
+    {
+      "path": "/api",
+      "upstream": "http://localhost:8080",
+      "methods": ["GET", "POST", "PUT", "DELETE"]
+    },
+    {
+      "path": "/static",
+      "upstream": "http://localhost:8081",
+      "methods": ["GET"]
+    },
+    {
+      "path": "/",
+      "upstream": "http://localhost:8082",
+      "methods": ["GET", "POST"]
+    }
+  ],
+  "middlewares": [
+    {
+      "type": "rate_limit",
+      "config": {
+        "requests_per_minute": 100
+      }
+    },
+    {
+      "type": "cors",
+      "config": {
+        "allowed_origins": ["*"],
+        "allow_credentials": true
+      }
+    },
+    {
+      "type": "cache",
+      "config": {
+        "ttl_seconds": 300
+      }
+    }
+  ]
+}

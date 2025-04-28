@@ -1,106 +1,132 @@
 const std = @import("std");
+const config = @import("../config/config.zig");
+const logger = @import("../utils/logger.zig");
 
-pub const types = @import("types.zig");
-pub const registry = @import("registry.zig");
+// Forward declarations for middleware types
+pub const RateLimitMiddleware = @import("rate_limit.zig").RateLimitMiddleware;
+pub const AuthMiddleware = @import("auth.zig").AuthMiddleware;
+pub const CorsMiddleware = @import("cors.zig").CorsMiddleware;
+pub const CacheMiddleware = @import("cache.zig").CacheMiddleware;
 
-// Re-export modules
-pub usingnamespace types;
-pub usingnamespace registry;
+/// Middleware result
+pub const MiddlewareResult = struct {
+    allowed: bool,
+    reason: []const u8,
 
-/// Initialize the middleware system
-pub fn init(allocator: std.mem.Allocator) !void {
-    try registry.initGlobalRegistry(allocator);
-}
+    pub fn deinit(self: *MiddlewareResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.reason);
+    }
+};
 
-/// Clean up the middleware system
-pub fn deinit() void {
-    registry.deinitGlobalRegistry();
-}
+/// Middleware interface
+pub const Middleware = struct {
+    /// Apply the middleware to a request
+    applyFn: *const fn (middleware: *Middleware, request: anytype, route: anytype) anyerror!MiddlewareResult,
 
-/// Register a middleware factory
-pub fn register(name: []const u8, factory: registry.MiddlewareFactory) !void {
-    try registry.register(name, factory);
-}
+    /// Initialize the middleware
+    initFn: *const fn (allocator: std.mem.Allocator, middleware_config: std.json.Value) anyerror!*Middleware,
 
-/// Create a middleware instance by name
-pub fn create(name: []const u8, config: anytype) !?*types.Middleware {
-    return try registry.create(name, config);
-}
+    /// Deinitialize the middleware
+    deinitFn: *const fn (middleware: *Middleware) void,
 
-/// Apply middleware to a request
-pub fn apply(middleware_list: []const []const u8, context: *types.Context) !types.MiddlewareResult {
-    for (middleware_list) |middleware_name| {
-        if (try create(middleware_name, .{})) |middleware| {
-            defer middleware.deinit();
+    /// Apply the middleware to a request
+    pub fn apply(self: *Middleware, request: anytype, route: anytype) !MiddlewareResult {
+        return self.applyFn(self, request, route);
+    }
 
-            const result = try middleware.process(context);
-            if (!result.success) {
+    /// Initialize the middleware
+    pub fn init(middleware_type: *Middleware, allocator: std.mem.Allocator, middleware_config: std.json.Value) !*Middleware {
+        return middleware_type.initFn(allocator, middleware_config);
+    }
+
+    /// Deinitialize the middleware
+    pub fn deinit(self: *Middleware) void {
+        self.deinitFn(self);
+    }
+};
+
+/// Middleware chain
+pub const MiddlewareChain = struct {
+    allocator: std.mem.Allocator,
+    middlewares: std.ArrayList(*Middleware),
+
+    /// Initialize the middleware chain
+    pub fn init(allocator: std.mem.Allocator) !MiddlewareChain {
+        return MiddlewareChain{
+            .allocator = allocator,
+            .middlewares = std.ArrayList(*Middleware).init(allocator),
+        };
+    }
+
+    /// Initialize the middleware chain from configuration
+    pub fn initFromConfig(allocator: std.mem.Allocator, middleware_config: []const config.MiddlewareConfig) !MiddlewareChain {
+        var chain = try MiddlewareChain.init(allocator);
+        errdefer chain.deinit();
+
+        for (middleware_config) |mw_config| {
+            const middleware_type = mw_config.type;
+
+            // Create middleware based on type
+            var middleware: *Middleware = undefined;
+
+            if (std.mem.eql(u8, middleware_type, "rate_limit")) {
+                middleware = try RateLimitMiddleware.init(allocator, mw_config.config);
+            } else if (std.mem.eql(u8, middleware_type, "auth")) {
+                middleware = try AuthMiddleware.init(allocator, mw_config.config);
+            } else if (std.mem.eql(u8, middleware_type, "cors")) {
+                middleware = try CorsMiddleware.init(allocator, mw_config.config);
+            } else if (std.mem.eql(u8, middleware_type, "cache")) {
+                middleware = try CacheMiddleware.init(allocator, mw_config.config);
+            } else {
+                logger.warning("Unknown middleware type: {s}", .{middleware_type});
+                continue;
+            }
+
+            try chain.add(middleware);
+        }
+
+        return chain;
+    }
+
+    /// Add a middleware to the chain
+    pub fn add(self: *MiddlewareChain, middleware: *Middleware) !void {
+        try self.middlewares.append(middleware);
+    }
+
+    /// Apply all middlewares in the chain
+    pub fn apply(self: *MiddlewareChain, request: anytype, route: anytype) !MiddlewareResult {
+        for (self.middlewares.items) |middleware| {
+            const result = try middleware.apply(request, route);
+
+            if (!result.allowed) {
                 return result;
             }
         }
+
+        return MiddlewareResult{
+            .allowed = true,
+            .reason = try self.allocator.dupe(u8, ""),
+        };
     }
 
-    return types.MiddlewareResult{
-        .success = true,
-        .status_code = 200,
-        .error_message = "",
-    };
-}
-
-test "middleware system" {
-    const testing = std.testing;
-
-    // Initialize middleware system
-    try init(testing.allocator);
-    defer deinit();
-
-    // Define a test middleware factory
-    const TestMiddleware = struct {
-        base: types.Middleware,
-        allocator: std.mem.Allocator,
-
-        fn create(allocator: std.mem.Allocator, config: anytype) !*types.Middleware {
-            _ = config;
-            var self = try allocator.create(@This());
-            self.* = .{
-                .base = .{
-                    .processFn = process,
-                    .deinitFn = destroyMiddleware,
-                },
-                .allocator = allocator,
-            };
-            return &self.base;
+    /// Clean up middleware chain resources
+    pub fn deinit(self: *MiddlewareChain) void {
+        for (self.middlewares.items) |middleware| {
+            middleware.deinit();
         }
 
-        fn process(base: *types.Middleware, context: *types.Context) !types.MiddlewareResult {
-            _ = base;
-            _ = context;
-            return types.MiddlewareResult{
-                .success = true,
-                .status_code = 200,
-                .error_message = "",
-            };
-        }
+        self.middlewares.deinit();
+    }
+};
 
-        fn destroyMiddleware(base: *types.Middleware) void {
-            const self = @fieldParentPtr(@This(), "base", base);
-            self.allocator.destroy(self);
-        }
-    };
+// Rate limiting middleware is now in rate_limit.zig
 
-    // Register the middleware factory
-    try register("test", TestMiddleware.create);
+// Authentication middleware is now in auth.zig
 
-    // Create a middleware instance
-    const middleware = try create("test", .{});
-    try testing.expect(middleware != null);
-    defer middleware.?.deinit();
+// CORS middleware is now in cors.zig
 
-    // Test the middleware
-    var context = try types.Context.init(testing.allocator, undefined, undefined);
-    defer context.deinit();
+// Cache middleware is now in cache.zig
 
-    const result = try middleware.?.process(&context);
-    try testing.expect(result.success);
-    try testing.expectEqual(@as(u16, 200), result.status_code);
-}
+// Helper functions are now in their respective middleware files
+
+// Tests are now in their respective middleware files

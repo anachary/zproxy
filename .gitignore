@@ -1,19 +1,40 @@
 # Zig build artifacts
 zig-cache/
 zig-out/
+build/
+build-*/
 
 # Editor files
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# Configuration files with sensitive information
-config.json
+# Benchmark results
+benchmarks/results/
 
 # Log files
 *.log
+
+# Configuration files with sensitive information
+config/production.json
+config/development.json
+config/test.json
+
+# Certificate files
+*.pem
+*.key
+*.crt
+
+# Dependency directories
+deps/
+
+# Executable files
+*.exe
+*.out
+*.app

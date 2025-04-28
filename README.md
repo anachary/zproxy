@@ -1,279 +1,339 @@
-# ZProxy - High-Performance API Gateway
+# ZProxy - The Fastest Proxy Ever
 
-A blazingly fast API gateway written in Zig that routes traffic to different backends based on rules like URL paths or authentication headers. ZProxy is designed to be the fastest reverse proxy available, leveraging Zig's unique capabilities and advanced optimization techniques.
+ZProxy is a high-performance reverse proxy written in Zig, designed to be the fastest proxy ever. It supports HTTP/1.1, HTTP/2, and WebSocket protocols with a focus on performance, memory safety, and simplicity.
 
-## Quick Start
+![ZProxy Logo](docs/images/zproxy_logo.png)
 
-For a quick start guide, see [QUICKSTART.md](QUICKSTART.md).
+## Overview
+
+ZProxy aims to outperform existing proxy solutions by leveraging Zig's performance characteristics and memory safety features. The architecture is designed for enterprise-level deployments, with support for scaling to 10,000+ connections per second.
 
 ## Features
 
-- **Extreme Performance**: Optimized for maximum throughput and minimum latency
-- **NUMA-Aware Architecture**: Scales linearly across multiple CPU sockets
-- **Protocol Support**: HTTP/1.1, HTTP/2, and WebSocket
-- **Advanced Routing**: Path-based routing with support for parameters and wildcards
-- **Middleware**: Authentication, rate limiting, and caching
-- **TLS**: Support for TLS with SNI
-- **Metrics**: Comprehensive performance metrics collection
-- **Configuration**: JSON configuration file or programmatic configuration
+### Core Features
+- **Multi-Protocol Support**: HTTP/1.1, HTTP/2, and WebSocket protocols
+- **High Performance**: Optimized for maximum throughput and minimal latency
+- **Flexible Routing**: Path-based routing with support for various HTTP methods
+- **Middleware System**: Pluggable middleware for authentication, rate limiting, CORS, and caching
+- **TLS Support**: Secure connections with certificate management
+- **Thread-per-Connection Model**: Efficient handling of concurrent connections
+- **Memory Safety**: Built with Zig's memory safety features
 
-## Performance
-
-ZProxy outperforms other popular reverse proxies by a significant margin:
-
-| Proxy    | Requests/sec | Latency (avg) | Memory Usage | Throughput    |
-|----------|--------------|---------------|--------------|---------------|
-| ZProxy   | 500,000+     | 0.2ms         | 12MB         | 20+ GB/s      |
-| Nginx    | 120,000      | 1.2ms         | 25MB         | 3.5 GB/s      |
-| HAProxy  | 130,000      | 1.0ms         | 30MB         | 4.2 GB/s      |
-| Envoy    | 100,000      | 1.5ms         | 45MB         | 2.8 GB/s      |
-
-For detailed performance information and benchmarks, see:
-- [PERFORMANCE.md](PERFORMANCE.md) - General performance benchmarks
-- [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) - Connection handling capacity
+### Advanced Features
+- **Protocol Detection**: Automatic detection of HTTP/1.1, HTTP/2, and WebSocket protocols
+- **Connection Pooling**: Reuse connections to upstream servers for better performance
+- **Comprehensive Benchmarking**: Built-in tools to measure and compare performance
+- **NUMA Awareness**: Optimized for multi-socket systems
+- **Custom Allocators**: Fine-grained memory management for performance-critical paths
+- **Extensible Architecture**: Easy to add new middleware and protocol handlers
 
 ## Getting Started
 
 ### Prerequisites
 
 - Zig 0.11.0 or later
+- PowerShell 5.0 or later (for running scripts on Windows)
 
-### Installation
+### Building
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/zproxy.git
-   cd zproxy
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/zproxy.git
+cd zproxy
 
-2. Build the project:
-   ```bash
-   zig build
-   ```
+# Build the project
+zig build
 
-### Running ZProxy
+# Run tests
+zig build test
+```
 
-1. Create a `config.json` file (or copy from `config.example.json`):
-   ```json
-   {
-     "listen_address": "127.0.0.1",
-     "listen_port": 8080,
-     "routes": [
-       {
-         "path": "/api/users",
-         "upstream": "http://localhost:3000",
-         "methods": ["GET", "POST", "PUT", "DELETE"],
-         "middleware": []
-       }
-     ],
-     "tls": {
-       "enabled": false,
-       "cert_path": "",
-       "key_path": "",
-       "domain_certs": []
-     },
-     "middleware": {
-       "rate_limit": {
-         "enabled": false,
-         "requests_per_minute": 100
-       },
-       "auth": {
-         "enabled": false,
-         "jwt_secret": ""
-       },
-       "cache": {
-         "enabled": false,
-         "ttl_seconds": 300
-       }
-     }
-   }
-   ```
+### Running
 
-2. Run ZProxy:
-   ```bash
-   zig build run
-   ```
+```bash
+# Run with default configuration
+zig build run
 
-3. Test with curl:
-   ```bash
-   curl http://localhost:8080/api/users
-   ```
+# Run with a specific configuration file
+zig build run -- examples/basic_proxy.json
+```
 
-### Running Examples
+### Using PowerShell Scripts
 
-ZProxy comes with several examples to help you get started:
+ZProxy includes several PowerShell scripts to simplify common tasks:
 
-1. Basic example (simple configuration with a single route):
-   ```bash
-   zig build run-basic
-   ```
+```powershell
+# Start the server with a configuration file
+.\scripts\start_server.ps1 -ConfigFile examples/basic_proxy.json
 
-2. Advanced example (multiple routes with middleware):
-   ```bash
-   zig build run-advanced
-   ```
+# Run benchmarks
+.\scripts\run_benchmark.ps1 -Url "http://localhost:8000/" -Connections 10000 -Duration 30
 
-3. Static middleware example (compile-time middleware chain):
-   ```bash
-   zig build run-static-middleware
-   ```
+# Compare ZProxy with other proxies (Nginx, Envoy)
+.\scripts\compare_proxies.ps1 -ConfigFile examples/high_performance.json
 
-### Troubleshooting
+# Run all benchmarks and generate a report
+.\scripts\run_all_benchmarks.ps1 -ConfigFile examples/basic_proxy.json -GenerateReport
+```
 
-If you encounter issues running ZProxy:
+### Benchmarking
 
-1. Check if the port is already in use
-2. Verify that the config.json file is valid JSON
-3. Ensure all upstream services are correctly configured
-4. Try building with debug information: `zig build -Doptimize=Debug`
+ZProxy includes a comprehensive benchmarking system:
 
-For more detailed troubleshooting, see [QUICKSTART.md](QUICKSTART.md).
+```bash
+# Run HTTP/1.1 benchmarks
+zig build benchmark -- http://localhost:8000/ 10000 30 100 1 http1
 
-## Configuration Options
+# Run HTTP/2 benchmarks
+zig build benchmark -- http://localhost:8000/ 10000 30 100 1 http2
 
-ZProxy supports various configuration options:
+# Run WebSocket benchmarks
+zig build benchmark -- ws://localhost:8000/ 1000 30 100 0 websocket
+```
+
+Parameters:
+- URL
+- Number of connections
+- Duration in seconds
+- Concurrency level
+- Keep-alive (1=enabled, 0=disabled)
+- Protocol (http1, http2, websocket)
+
+## Configuration
+
+ZProxy is configured using a JSON file. Several example configurations are provided in the `examples/` directory.
 
 ### Basic Configuration
 
-- **listen_address**: The IP address to listen on (default: "127.0.0.1")
-- **listen_port**: The port to listen on (default: 8080)
+```json
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "thread_count": 4,
+  "backlog": 128,
+  "max_connections": 1000,
+  "connection_timeout_ms": 30000,
+  "protocols": ["http1", "http2", "websocket"],
+  "tls": {
+    "enabled": false,
+    "cert_file": null,
+    "key_file": null
+  },
+  "routes": [
+    {
+      "path": "/api",
+      "upstream": "http://localhost:8080",
+      "methods": ["GET", "POST", "PUT", "DELETE"]
+    },
+    {
+      "path": "/static",
+      "upstream": "http://localhost:8081",
+      "methods": ["GET"]
+    },
+    {
+      "path": "/",
+      "upstream": "http://localhost:8082",
+      "methods": ["GET", "POST"]
+    }
+  ],
+  "middlewares": []
+}
+```
 
-### TLS Configuration
+### Configuration with Middleware
 
-- **enabled**: Whether TLS is enabled (default: false)
-- **cert_path**: Path to the TLS certificate file
-- **key_path**: Path to the TLS key file
+```json
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "thread_count": 4,
+  "backlog": 128,
+  "max_connections": 1000,
+  "connection_timeout_ms": 30000,
+  "protocols": ["http1", "http2", "websocket"],
+  "tls": {
+    "enabled": false,
+    "cert_file": null,
+    "key_file": null
+  },
+  "routes": [
+    {
+      "path": "/api",
+      "upstream": "http://localhost:8080",
+      "methods": ["GET", "POST", "PUT", "DELETE"]
+    }
+  ],
+  "middlewares": [
+    {
+      "type": "rate_limit",
+      "config": {
+        "requests_per_minute": 100
+      }
+    },
+    {
+      "type": "cors",
+      "config": {
+        "allowed_origins": ["*"],
+        "allow_credentials": true
+      }
+    },
+    {
+      "type": "cache",
+      "config": {
+        "ttl_seconds": 300
+      }
+    }
+  ]
+}
+```
 
-### Middleware Configuration
+### High-Performance Configuration
 
-- **Rate Limiting**:
-  - **enabled**: Whether rate limiting is enabled (default: false)
-  - **requests_per_minute**: Maximum requests per minute (default: 60)
-
-- **Authentication**:
-  - **enabled**: Whether JWT authentication is enabled (default: false)
-  - **jwt_secret**: Secret key for JWT validation
-
-- **Caching**:
-  - **enabled**: Whether response caching is enabled (default: false)
-  - **ttl_seconds**: Time-to-live for cached responses in seconds (default: 60)
-
-For more detailed configuration options, see [CONFIG.md](docs/CONFIG.md).
-
-## Architecture
-
-ZProxy follows a modular architecture with the following components:
-
-- **Gateway**: The main entry point that initializes and coordinates all components
-- **Router**: Matches incoming requests to routes and applies middleware
-- **Protocol Handlers**: Handle different protocols (HTTP/1.1, HTTP/2, WebSocket)
-- **Middleware**: Apply cross-cutting concerns like authentication and rate limiting
-- **Configuration**: Manage gateway configuration
-- **Metrics**: Collect and report performance metrics
-
-### Performance Optimizations
-
-ZProxy includes numerous performance optimizations:
-
-- **NUMA-Aware Architecture**: Optimized for multi-socket systems
-- **Lock-Free Data Structures**: Eliminates contention in high-concurrency scenarios
-- **Vectored I/O**: Reduces system call overhead and improves throughput
-- **Zero-Copy Forwarding**: Minimizes memory copies for maximum efficiency
-- **Memory Pooling**: Reuses buffers to reduce allocation overhead
-- **CPU Affinity**: Pins threads to specific CPUs for optimal cache utilization
-
-For a detailed technical explanation of these optimizations, see [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
-
-For a detailed architecture overview, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## API Reference
-
-ZProxy provides a simple API for creating and configuring the gateway. The main components are:
-
-- **Gateway**: The main gateway instance
-- **Config**: Configuration for the gateway
-- **Route**: Route configuration
-- **Middleware**: Middleware components (auth, rate limiting, caching)
-
-For a complete API reference, see [API.md](docs/API.md).
+```json
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "thread_count": 16,
+  "backlog": 1024,
+  "max_connections": 10000,
+  "connection_timeout_ms": 30000,
+  "protocols": ["http1", "http2"],
+  "tls": {
+    "enabled": false,
+    "cert_file": null,
+    "key_file": null
+  },
+  "routes": [
+    {
+      "path": "/api",
+      "upstream": "http://localhost:8080",
+      "methods": ["GET", "POST", "PUT", "DELETE"]
+    }
+  ],
+  "middlewares": []
+}
+```
 
 ## Project Structure
 
 ```
 zproxy/
 ├── src/                  # Source code
+│   ├── main.zig          # Entry point
 │   ├── config/           # Configuration
-│   ├── middleware/       # Middleware components
-│   │   ├── auth/         # Authentication middleware
-│   │   └── cache/        # Caching middleware
+│   │   ├── config.zig    # Configuration schema
+│   │   └── loader.zig    # Configuration loader
+│   ├── server/           # Server implementation
+│   │   ├── server.zig    # Base server
+│   │   ├── connection.zig # Connection handling
+│   │   └── thread_pool.zig # Thread pool
 │   ├── protocol/         # Protocol handlers
-│   │   ├── http1/        # HTTP/1.1 protocol
-│   │   ├── http2/        # HTTP/2 protocol
-│   │   └── websocket/    # WebSocket protocol
+│   │   ├── detector.zig  # Protocol detection
+│   │   ├── http1.zig     # HTTP/1.1 handler
+│   │   ├── http2.zig     # HTTP/2 handler
+│   │   └── websocket.zig # WebSocket handler
 │   ├── router/           # Routing
+│   │   ├── router.zig    # Router implementation
+│   │   ├── matcher.zig   # Route matching
+│   │   └── route.zig     # Route definition
+│   ├── proxy/            # Proxying
+│   │   ├── proxy.zig     # Proxy implementation
+│   │   ├── upstream.zig  # Upstream management
+│   │   └── pool.zig      # Connection pooling
+│   ├── middleware/       # Middleware
+│   │   ├── middleware.zig # Middleware interface
+│   │   ├── auth.zig      # Authentication
+│   │   ├── rate_limit.zig # Rate limiting
+│   │   ├── cors.zig      # CORS handling
+│   │   └── cache.zig     # Response caching
 │   ├── tls/              # TLS support
-│   ├── metrics/          # Metrics collection
-│   └── utils/            # Utility functions
-│       ├── thread_pool.zig  # NUMA-aware thread pool
-│       ├── numa.zig         # NUMA utilities
-│       ├── acceptor.zig     # High-performance connection acceptor
-│       ├── vectored_io.zig  # Vectored I/O implementation
-│       ├── zero_copy.zig    # Zero-copy buffer implementation
-│       └── buffer.zig       # Buffer pool implementation
-├── examples/             # Example configurations
-├── benchmarks/           # Benchmarking tools and utilities
-│   ├── connection_benchmark.zig  # Connection benchmark tool
-│   ├── simple_benchmark.zig      # Simplified benchmark tool
-│   ├── mock_server.zig           # Mock server for testing
-│   └── results/                  # Benchmark results
-├── scripts/              # Utility scripts
-│   ├── run_benchmark.ps1         # Windows benchmark script
-│   ├── run_benchmark.sh          # Linux/macOS benchmark script
-│   └── stress_test.ps1           # Stress testing script
+│   │   ├── tls.zig       # TLS implementation
+│   │   └── certificate.zig # Certificate management
+│   └── utils/            # Utilities
+│       ├── logger.zig    # Logging
+│       ├── buffer.zig    # Buffer management
+│       ├── allocator.zig # Custom allocators
+│       └── numa.zig      # NUMA utilities
 ├── tests/                # Tests
-│   ├── unit/             # Unit tests
-│   └── integration/      # Integration tests
-├── docs/                 # Documentation
-│   ├── API.md                    # API reference
-│   ├── ARCHITECTURE.md           # Architecture overview
-│   ├── CONFIG.md                 # Configuration guide
-│   └── CUSTOM_MIDDLEWARE.md      # Custom middleware guide
-├── PERFORMANCE.md        # Performance benchmarks and optimizations
-├── OPTIMIZATIONS.md      # Technical deep dive into optimizations
-├── QUICKSTART.md         # Quick start guide
-└── BENCHMARK.md          # Benchmarking instructions
+├── benchmarks/           # Benchmarks
+├── examples/             # Example configurations
+└── docs/                 # Documentation
+    ├── config/           # Configuration documentation
+    ├── server/           # Server documentation
+    ├── protocol/         # Protocol documentation
+    ├── router/           # Router documentation
+    ├── proxy/            # Proxy documentation
+    ├── middleware/       # Middleware documentation
+    ├── tls/              # TLS documentation
+    ├── utils/            # Utilities documentation
+    └── reports/          # Performance reports
 ```
 
-## Contributing
+## Performance
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+ZProxy is designed to be the fastest proxy ever, with a focus on:
+
+- **Low Latency**: Minimal processing overhead with optimized code paths
+- **High Throughput**: Efficient handling of concurrent connections (10,000+ connections per second)
+- **Memory Efficiency**: Careful memory management with custom allocators
+- **CPU Efficiency**: Optimized algorithms and data structures
+- **Scalability**: Designed to scale across multiple CPU cores and NUMA nodes
+
+### Benchmarking
+
+The benchmarking system allows you to:
+
+1. **Measure Performance**: Quantify requests per second, latency, and throughput
+2. **Compare Configurations**: Test different configuration settings
+3. **Compare Protocols**: Benchmark HTTP/1.1, HTTP/2, and WebSocket
+4. **Compare with Other Proxies**: Benchmark against Nginx, Envoy, and other proxies
+
+Benchmark reports are generated in Markdown format and stored in the `docs/reports/` directory.
+
+## Documentation
+
+ZProxy includes comprehensive documentation in the `docs` directory:
+
+- [Getting Started](docs/getting_started.md)
+- [Architecture](docs/architecture.md)
+- [Configuration](docs/config/index.md)
+- [Server](docs/server/index.md)
+- [Protocols](docs/protocol/index.md)
+- [Routing](docs/router/index.md)
+- [Proxying](docs/proxy/index.md)
+- [Middleware](docs/middleware/index.md)
+- [TLS Support](docs/tls/index.md)
+- [Utilities](docs/utils/index.md)
+- [Performance Reports](docs/reports/index.md)
+- [Contributing](docs/contributing.md)
+
+## Development
+
+### Architecture
+
+ZProxy follows a modular architecture with clear separation of concerns:
+
+1. **Configuration**: JSON-based configuration with validation
+2. **Server**: Core server implementation with connection handling
+3. **Protocol Handlers**: Protocol-specific implementations
+4. **Router**: Request routing based on paths and methods
+5. **Proxy**: Forwarding requests to upstream servers
+6. **Middleware**: Pluggable components for request/response processing
+7. **TLS**: Secure connection handling
+8. **Utilities**: Logging, buffer management, and other utilities
+
+### Contributing
+
+Contributions are welcome! Here's how you can contribute:
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Run tests (`zig build test`)
+5. Commit your changes (`git commit -m 'Add some amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Benchmarking
-
-ZProxy includes comprehensive benchmarking tools to measure its performance:
-
-```bash
-# Build the benchmark tools
-zig build -Doptimize=ReleaseFast
-
-# Run a basic benchmark
-cd scripts
-./run_benchmark.ps1 --host 127.0.0.1 --port 8080
-```
-
-For detailed benchmarking instructions, see [BENCHMARK.md](BENCHMARK.md).
-
-## Acknowledgments
-
-- The Zig programming language and community
-- Inspiration from other API gateways like NGINX, Kong, and Traefik
